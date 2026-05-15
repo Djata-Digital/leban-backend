@@ -22,7 +22,6 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 
-// DTOs novos que vamos criar
 import { CreateAdminDto } from './dto/create-admin.dto';
 import { UpdateAdminDto } from './dto/update-admin.dto';
 import { UpdateAdminPasswordDto } from './dto/update-admin-password.dto';
@@ -70,10 +69,6 @@ export class UsersController {
     });
   }
 
-  // ======================================================
-  // USUÁRIOS GERAIS
-  // ======================================================
-
   @Roles(Role.ADMIN, Role.SELLER)
   @Get()
   async findAll() {
@@ -87,10 +82,6 @@ export class UsersController {
     const users = await this.usersService.findByRole(Role.DRIVER);
     return users.map((user) => this.usersService.sanitizeUser(user));
   }
-
-  // ======================================================
-  // ADMINISTRADORES
-  // ======================================================
 
   @Roles(Role.ADMIN)
   @Post('admins')
@@ -139,14 +130,28 @@ export class UsersController {
     return this.usersService.sanitizeUser(admin);
   }
 
-  // ======================================================
-  // PERFIL DO USUÁRIO LOGADO
-  // ======================================================
-
   @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER, Role.DRIVER)
   @Get('me')
   async getMe(@CurrentUser('sub') userId: string) {
     const user = await this.usersService.findById(userId);
+    return this.usersService.sanitizeUser(user);
+  }
+
+  /**
+   * Salva token do Expo Push Notification.
+   * Esse token permite enviar notificação mesmo com app fechado.
+   */
+  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER, Role.DRIVER)
+  @Patch('expo-push-token')
+  async updateExpoPushToken(
+    @CurrentUser('sub') userId: string,
+    @Body() body: { expoPushToken?: string },
+  ) {
+    const user = await this.usersService.updateExpoPushToken(
+      userId,
+      body.expoPushToken,
+    );
+
     return this.usersService.sanitizeUser(user);
   }
 

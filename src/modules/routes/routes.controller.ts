@@ -8,13 +8,14 @@ import {
   Query,
   Request,
 } from '@nestjs/common';
+
 import { RoutesService } from './routes.service';
 import { CreateRouteDto } from './dto/create-route.dto';
 import { UpdateRouteDto } from './dto/update-route.dto';
+
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 
-@Roles(Role.ADMIN, Role.SELLER)
 @Controller('routes')
 export class RoutesController {
   constructor(private readonly routesService: RoutesService) {}
@@ -25,11 +26,26 @@ export class RoutesController {
     return this.routesService.create(dto);
   }
 
+  @Roles(Role.ADMIN, Role.SELLER)
   @Get()
-  findAll(@Query('search') search: string | undefined, @Request() req: { user: any }) {
+  findAll(
+    @Query('search') search: string | undefined,
+    @Request() req: { user: any },
+  ) {
     return this.routesService.findAll(search, req.user);
   }
 
+  /**
+   * Endpoint leve para app passageiro buscar origem/destino.
+   * Retorna apenas rotas ativas e poucos campos.
+   */
+  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
+  @Get('suggestions')
+  suggestions(@Query('search') search?: string) {
+    return this.routesService.suggestions(search);
+  }
+
+  @Roles(Role.ADMIN, Role.SELLER)
   @Get(':id')
   findOne(@Param('id') id: string, @Request() req: { user: any }) {
     return this.routesService.findOne(id, req.user);

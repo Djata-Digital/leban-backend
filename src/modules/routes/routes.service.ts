@@ -128,6 +128,59 @@ export class RoutesService {
     });
   }
 
+  /**
+   * Sugestões leves para app passageiro.
+   * Retorna apenas rotas ativas e poucos campos.
+   * Ideal para internet fraca.
+   */
+  async suggestions(search?: string): Promise<
+    {
+      id: string;
+      originName: string;
+      destinationName: string;
+      label: string;
+    }[]
+  > {
+    const normalizedSearch = search?.trim();
+
+    const query = this.routesRepository
+      .createQueryBuilder('route')
+      .select([
+        'route.id',
+        'route.originName',
+        'route.destinationName',
+      ])
+      .where('route.active = :active', {
+        active: true,
+      });
+
+    if (normalizedSearch && normalizedSearch.length > 0) {
+      query.andWhere(
+        `(
+          LOWER(route.origin_name) LIKE LOWER(:search)
+          OR LOWER(route.destination_name) LIKE LOWER(:search)
+        )`,
+        {
+          search: `%${normalizedSearch}%`,
+        },
+      );
+    }
+
+    query
+      .orderBy('route.origin_name', 'ASC')
+      .addOrderBy('route.destination_name', 'ASC')
+      .limit(15);
+
+    const routes = await query.getMany();
+
+    return routes.map((route) => ({
+      id: route.id,
+      originName: route.originName,
+      destinationName: route.destinationName,
+      label: `${route.originName} → ${route.destinationName}`,
+    }));
+  }
+
   async findOne(id: string, user?: CurrentUser): Promise<Route> {
     const route = await this.routesRepository.findOne({
       where: { id },

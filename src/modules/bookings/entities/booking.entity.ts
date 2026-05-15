@@ -26,9 +26,6 @@ export enum PaymentStatus {
   REFUNDED = 'refunded',
 }
 
-/**
- * Reserva/compra de passagem.
- */
 @Entity('bookings')
 export class Booking {
   @PrimaryGeneratedColumn('uuid')
@@ -48,9 +45,6 @@ export class Booking {
   @ManyToOne(() => User, { eager: true })
   buyer: User;
 
-  /**
-   * Vendedor que realizou a venda.
-   */
   @ManyToOne(() => User, {
     eager: true,
     nullable: true,
@@ -72,9 +66,6 @@ export class Booking {
   })
   passengerPhone?: string | null;
 
-  /**
-   * Texto antigo mantido para compatibilidade.
-   */
   @Column({
     name: 'pickup_location',
     type: 'varchar',
@@ -83,18 +74,12 @@ export class Booking {
   })
   pickupLocation?: string | null;
 
-  /**
-   * Ponto de embarque.
-   */
   @ManyToOne(() => BoardingPoint, {
     eager: true,
     nullable: true,
   })
   boardingPoint?: BoardingPoint | null;
 
-  /**
-   * Ordem do ponto de embarque.
-   */
   @Column({
     name: 'boarding_point_order',
     type: 'int',
@@ -102,18 +87,12 @@ export class Booking {
   })
   boardingPointOrder?: number | null;
 
-  /**
-   * Ponto de desembarque.
-   */
   @ManyToOne(() => BoardingPoint, {
     eager: true,
     nullable: true,
   })
   dropoffPoint?: BoardingPoint | null;
 
-  /**
-   * Ordem do ponto de desembarque.
-   */
   @Column({
     name: 'dropoff_point_order',
     type: 'int',
@@ -173,9 +152,6 @@ export class Booking {
   })
   sellerCommissionAmount: number;
 
-  /**
-   * Campos antigos mantidos para compatibilidade.
-   */
   @Column({
     name: 'subtotal_amount',
     type: 'numeric',
@@ -267,9 +243,6 @@ export class Booking {
   })
   confirmedAt?: Date | null;
 
-  /**
-   * Momento em que o passageiro embarcou.
-   */
   @Column({
     name: 'boarded_at',
     type: 'timestamp',
@@ -277,9 +250,6 @@ export class Booking {
   })
   boardedAt?: Date | null;
 
-  /**
-   * Momento em que o passageiro chegou ao destino.
-   */
   @Column({
     name: 'arrived_at',
     type: 'timestamp',
@@ -293,6 +263,17 @@ export class Booking {
     nullable: true,
   })
   cancelledAt?: Date | null;
+
+  /**
+   * Quando preenchido, a viagem some apenas do app do passageiro.
+   * Admin, seller e banco de dados continuam mantendo o histórico.
+   */
+  @Column({
+    name: 'passenger_deleted_at',
+    type: 'timestamp',
+    nullable: true,
+  })
+  passengerDeletedAt?: Date | null;
 
   @CreateDateColumn({
     name: 'created_at',

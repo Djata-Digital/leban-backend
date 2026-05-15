@@ -56,9 +56,9 @@ export class UsersService {
     return this.usersRepository.save(user);
   }
 
-  // ======================================================
-  // ADMINISTRADORES
-  // ======================================================
+  async save(user: User): Promise<User> {
+    return this.usersRepository.save(user);
+  }
 
   async createAdmin(dto: CreateAdminDto): Promise<User> {
     await this.ensurePhoneIsAvailable(dto.phoneNumber.trim());
@@ -159,10 +159,6 @@ export class UsersService {
     return this.usersRepository.save(admin);
   }
 
-  // ======================================================
-  // CONSULTAS
-  // ======================================================
-
   async findAll(): Promise<User[]> {
     return this.usersRepository.find({
       order: {
@@ -204,10 +200,6 @@ export class UsersService {
       .getOne();
   }
 
-  // ======================================================
-  // PERFIL DO USUÁRIO LOGADO
-  // ======================================================
-
   async updateOwnProfile(
     userId: string,
     dto: UpdateProfileDto,
@@ -244,6 +236,31 @@ export class UsersService {
     if (dto.password) {
       user.password = dto.password;
     }
+
+    return this.usersRepository.save(user);
+  }
+
+  /**
+   * Salva token Expo Push Notification.
+   * Otimizado: só salva se mudou, evitando escrita desnecessária no banco.
+   */
+  async updateExpoPushToken(
+    userId: string,
+    expoPushToken?: string,
+  ): Promise<User> {
+    const user = await this.findById(userId);
+
+    const cleanToken = String(expoPushToken || '').trim();
+
+    if (!cleanToken) {
+      throw new BadRequestException('Token de notificação inválido.');
+    }
+
+    if (user.expoPushToken === cleanToken) {
+      return user;
+    }
+
+    user.expoPushToken = cleanToken;
 
     return this.usersRepository.save(user);
   }

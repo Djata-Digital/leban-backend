@@ -35,8 +35,31 @@ export class BookingsController {
   @Get('my')
   findMyBookings(@Request() req: { user: any }) {
     const userId = req.user?.id || req.user?.sub;
-
     return this.bookingsService.findMyBookings(userId);
+  }
+
+  @Roles(Role.PASSENGER)
+  @Patch('delete-selected-for-passenger')
+  deleteSelectedForPassenger(
+    @Body() dto: { bookingIds: string[] },
+    @Request() req: { user: any },
+  ) {
+    return this.bookingsService.deleteSelectedForPassenger(
+      dto.bookingIds,
+      req.user,
+    );
+  }
+
+  @Roles(Role.PASSENGER)
+  @Patch('delete-all-for-passenger')
+  deleteAllForPassenger(@Request() req: { user: any }) {
+    return this.bookingsService.deleteAllForPassenger(req.user);
+  }
+
+  @Roles(Role.PASSENGER)
+  @Patch(':id/delete-for-passenger')
+  deleteForPassenger(@Param('id') id: string, @Request() req: { user: any }) {
+    return this.bookingsService.deleteForPassenger(id, req.user);
   }
 
   @Roles(Role.ADMIN, Role.SELLER, Role.DRIVER)

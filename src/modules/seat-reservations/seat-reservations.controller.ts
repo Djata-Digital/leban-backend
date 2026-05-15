@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+
 import { SeatReservationsService } from './seat-reservations.service';
 import { CreateSeatReservationDto } from './dto/create-seat-reservation.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -12,8 +13,45 @@ export class SeatReservationsController {
   constructor(private readonly service: SeatReservationsService) {}
 
   /**
-   * Reserva um assento específico.
-   * Passageiro precisa poder fazer isso pelo app.
+   * Segura temporariamente um assento por 15 minutos.
+   *
+   * Usa status HELD.
+   * Serve quando o passageiro toca no assento antes de confirmar reserva.
+   */
+  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
+  @Post('hold')
+  holdSeat(
+    @Body()
+    dto: {
+      tripId: string;
+      vehicleSeatId: string;
+    },
+  ) {
+    return this.service.holdSeat(dto);
+  }
+
+  /**
+   * Libera uma seleção temporária.
+   *
+   * Usa quando o passageiro desmarca o assento antes de confirmar.
+   */
+  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
+  @Patch('hold/release')
+  releaseHeldSeat(
+    @Body()
+    dto: {
+      tripId: string;
+      vehicleSeatId: string;
+    },
+  ) {
+    return this.service.releaseHeldSeat(dto);
+  }
+
+  /**
+   * Reserva definitivamente um assento específico.
+   *
+   * Aqui já é depois de confirmar a reserva principal.
+   * Se existir HELD para o assento, ele vira RESERVED.
    */
   @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
   @Post()
@@ -22,9 +60,9 @@ export class SeatReservationsController {
   }
 
   /**
-   * Lista assentos reservados/vendidos de uma viagem.
+   * Lista assentos reservados/vendidos/temporariamente ocupados de uma viagem.
    */
-  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
+  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER, Role.DRIVER)
   @Get('trip/:tripId')
   findByTrip(@Param('tripId') tripId: string) {
     return this.service.findByTrip(tripId);
@@ -50,7 +88,7 @@ export class SeatReservationsController {
   }
 
   /**
-   * Expira reservas antigas manualmente.
+   * Expira seleções temporárias antigas manualmente.
    */
   @Roles(Role.ADMIN)
   @Patch('expire-old')

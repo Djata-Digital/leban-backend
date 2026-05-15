@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 
 import {
   Booking,
@@ -241,9 +241,6 @@ export class BookingsService {
 
     const ownerAmount = ticketAmount - sellerCommissionAmount;
 
-    const expiresAt = new Date();
-    expiresAt.setMinutes(expiresAt.getMinutes() + 15);
-
     const booking = this.bookingsRepository.create({
       bookingCode: this.generateBookingCode(),
 
@@ -282,7 +279,8 @@ export class BookingsService {
       bookingStatus: BookingStatus.RESERVED,
       paymentStatus: PaymentStatus.PENDING,
 
-      expiresAt,
+      expiresAt: null,
+      passengerDeletedAt: null,
     });
 
     const savedBooking = await this.bookingsRepository.save(booking);
@@ -369,6 +367,7 @@ export class BookingsService {
         buyer: {
           id: userId,
         },
+        passengerDeletedAt: IsNull(),
       },
       relations: {
         trip: {
@@ -384,6 +383,117 @@ export class BookingsService {
         createdAt: 'DESC',
       },
     });
+  }
+
+  async deleteForPassenger(
+    bookingId: string,
+    currentUser?: CurrentUser,
+  ): Promise<{ message: string }> {
+    if (!this.isPassenger(currentUser)) {
+      throw new ForbiddenException(
+        'Apenas passageiro pode eliminar esta viagem do próprio app.',
+      );
+    }
+
+    const booking = await this.findOne(bookingId, currentUser);
+
+    booking.passengerDeletedAt = new Date();
+
+    await this.bookingsRepository.save(booking);
+
+    return {
+      message: 'Viagem eliminada do app do passageiro.',
+    };
+  }
+
+  async deleteSelectedForPassenger(
+    bookingIds: string[],
+    currentUser?: CurrentUser,
+  ): Promise<{ message: string; deletedCount: number }> {
+    if (!this.isPassenger(currentUser)) {
+      throw new ForbiddenException('Apenas passageiro pode eliminar viagens.');
+    }
+
+    const passengerId = this.getUserId(currentUser);
+
+    if (!passengerId) {
+      throw new ForbiddenException('Usuário inválido.');
+    }
+
+    if (!Array.isArray(bookingIds) || bookingIds.length === 0) {
+      throw new BadRequestException('Nenhuma viagem selecionada.');
+    }
+
+    let deletedCount = 0;
+
+    for (const bookingId of bookingIds) {
+      const booking = await this.bookingsRepository.findOne({
+        where: {
+          id: bookingId,
+        },
+        relations: {
+          buyer: true,
+        },
+      });
+
+      if (!booking) {
+        continue;
+      }
+
+      if (booking.buyer?.id !== passengerId) {
+        continue;
+      }
+
+      booking.passengerDeletedAt = new Date();
+
+      await this.bookingsRepository.save(booking);
+
+      deletedCount += 1;
+    }
+
+    return {
+      message: 'Viagens selecionadas eliminadas do app do passageiro.',
+      deletedCount,
+    };
+  }
+
+  async deleteAllForPassenger(
+    currentUser?: CurrentUser,
+  ): Promise<{ message: string; deletedCount: number }> {
+    if (!this.isPassenger(currentUser)) {
+      throw new ForbiddenException('Apenas passageiro pode eliminar viagens.');
+    }
+
+    const passengerId = this.getUserId(currentUser);
+
+    if (!passengerId) {
+      throw new ForbiddenException('Usuário inválido.');
+    }
+
+    const bookings = await this.bookingsRepository.find({
+      where: {
+        buyer: {
+          id: passengerId,
+        },
+        passengerDeletedAt: IsNull(),
+      },
+      relations: {
+        buyer: true,
+      },
+    });
+
+    for (const booking of bookings) {
+      booking.passengerDeletedAt = new Date();
+    }
+
+    if (bookings.length > 0) {
+      await this.bookingsRepository.save(bookings);
+    }
+
+    return {
+      message: 'Todas as viagens foram eliminadas do app do passageiro.',
+      deletedCount: bookings.length,
+    };
   }
 
   async findPassengersByTrip(
@@ -505,10 +615,7 @@ export class BookingsService {
         return dropoffA - dropoffB;
       }
 
-      return (
-        new Date(a.createdAt).getTime() -
-        new Date(b.createdAt).getTime()
-      );
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
   }
 
@@ -538,6 +645,10 @@ export class BookingsService {
       if (!passengerId || booking.buyer?.id !== passengerId) {
         throw new ForbiddenException('Você não tem acesso a esta reserva.');
       }
+
+      if (booking.passengerDeletedAt) {
+        throw new NotFoundException('Reserva não encontrada.');
+      }
     }
 
     if (this.isDriver(currentUser)) {
@@ -558,10 +669,7 @@ export class BookingsService {
       const soldByAnotherSeller =
         booking.seller && booking.seller.id !== sellerId;
 
-      const canAccess = await this.sellerHasAccessToBooking(
-        booking,
-        sellerId,
-      );
+      const canAccess = await this.sellerHasAccessToBooking(booking, sellerId);
 
       if (!canAccess || soldByAnotherSeller) {
         throw new ForbiddenException('Você não tem acesso a esta reserva.');
@@ -600,10 +708,12 @@ export class BookingsService {
     booking.bookingStatus = BookingStatus.CONFIRMED;
     booking.paymentStatus = PaymentStatus.PAID;
     booking.confirmedAt = new Date();
+    booking.expiresAt = null;
 
     for (const reservation of seatReservations) {
       reservation.reservationStatus = SeatReservationStatus.SOLD;
       reservation.soldAt = new Date();
+      reservation.expiresAt = null;
     }
 
     await this.seatReservationsRepository.save(seatReservations);
@@ -721,6 +831,8 @@ export class BookingsService {
 
     for (const reservation of seatReservations) {
       reservation.reservationStatus = SeatReservationStatus.CANCELLED;
+      reservation.cancelledAt = new Date();
+      reservation.expiresAt = null;
     }
 
     await this.seatReservationsRepository.save(seatReservations);
@@ -744,6 +856,7 @@ export class BookingsService {
     booking.bookingStatus = BookingStatus.CANCELLED;
     booking.cancelledAt = new Date();
     booking.cargoAmount = 0;
+    booking.expiresAt = null;
 
     this.recalculateBookingTotal(booking);
 

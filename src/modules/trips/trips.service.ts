@@ -24,6 +24,14 @@ import {
 
 import { Role } from '../../common/enums/role.enum';
 
+type SearchTripsFilters = {
+  origin?: string;
+  destination?: string;
+  vehicleType?: string;
+  routeId?: string;
+  date?: string;
+};
+
 @Injectable()
 export class TripsService {
   constructor(
@@ -291,15 +299,6 @@ export class TripsService {
     return [];
   }
 
-  /**
-   * Retorna TODAS as viagens do motorista:
-   * - atuais: scheduled, boarding, in_progress
-   * - histórico: completed, cancelled
-   *
-   * O app separa depois:
-   * - Início mostra atuais
-   * - Histórico mostra completed/cancelled
-   */
   async findMyDriverTrips(driverId: string): Promise<Trip[]> {
     return this.tripsRepository.find({
       where: {
@@ -353,13 +352,17 @@ export class TripsService {
     });
   }
 
-  async search(
-    origin?: string,
-    destination?: string,
-    vehicleType?: string,
-  ): Promise<Trip[]> {
+  async search(filters: SearchTripsFilters): Promise<Trip[]> {
     const now = new Date();
     const today = this.getTodayString();
+
+    const {
+      origin,
+      destination,
+      vehicleType,
+      routeId,
+      date,
+    } = filters;
 
     const query = this.tripsRepository
       .createQueryBuilder('trip')
@@ -384,6 +387,12 @@ export class TripsService {
         },
       );
 
+    if (routeId && routeId.trim()) {
+      query.andWhere('route.id = :routeId', {
+        routeId: routeId.trim(),
+      });
+    }
+
     if (origin && origin.trim()) {
       query.andWhere('LOWER(route.origin_name) LIKE LOWER(:origin)', {
         origin: `%${origin.trim()}%`,
@@ -400,6 +409,18 @@ export class TripsService {
       query.andWhere('vehicle.vehicle_type = :vehicleType', {
         vehicleType,
       });
+    }
+
+    if (date && date.trim()) {
+      query.andWhere(
+        `(
+          trip.boarding_date = :date
+          OR DATE(trip.departure_datetime) = :date
+        )`,
+        {
+          date: date.trim(),
+        },
+      );
     }
 
     query
@@ -462,17 +483,17 @@ export class TripsService {
       .andWhere(
         `(
           reservation.reservationStatus = :soldStatus
+          OR reservation.reservationStatus = :reservedStatus
           OR (
-            reservation.reservationStatus = :reservedStatus
-            AND (
-              reservation.expiresAt IS NULL
-              OR reservation.expiresAt > :now
-            )
+            reservation.reservationStatus = :heldStatus
+            AND reservation.expiresAt IS NOT NULL
+            AND reservation.expiresAt > :now
           )
         )`,
         {
           soldStatus: SeatReservationStatus.SOLD,
           reservedStatus: SeatReservationStatus.RESERVED,
+          heldStatus: SeatReservationStatus.HELD,
           now,
         },
       )
@@ -480,6 +501,13 @@ export class TripsService {
 
     const occupiedSeatIds = new Set(
       occupiedReservations.map((reservation) => reservation.vehicleSeat.id),
+    );
+
+    const reservationBySeatId = new Map(
+      occupiedReservations.map((reservation) => [
+        reservation.vehicleSeat.id,
+        reservation,
+      ]),
     );
 
     const availableSeatsCount = seats.filter(
@@ -490,6 +518,7 @@ export class TripsService {
     await this.tripsRepository.save(trip);
 
     return seats.map((seat) => {
+      const reservation = reservationBySeatId.get(seat.id);
       const isOccupied = occupiedSeatIds.has(seat.id);
 
       return {
@@ -499,6 +528,8 @@ export class TripsService {
         seatType: seat.seatType,
         isAvailable: !isOccupied,
         status: isOccupied ? 'occupied' : 'available',
+        reservationStatus: reservation?.reservationStatus ?? null,
+        expiresAt: reservation?.expiresAt ?? null,
       };
     });
   }

@@ -5,6 +5,7 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+
 import { User } from '../../users/entities/user.entity';
 
 export enum NotificationType {
@@ -32,13 +33,21 @@ export class Notification {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => User, { eager: true, onDelete: 'CASCADE' })
+  @ManyToOne(() => User, {
+    eager: true,
+    onDelete: 'CASCADE',
+  })
   user: User;
 
-  @Column({ type: 'varchar', length: 150 })
+  @Column({
+    type: 'varchar',
+    length: 150,
+  })
   title: string;
 
-  @Column({ type: 'text' })
+  @Column({
+    type: 'text',
+  })
   message: string;
 
   @Column({
@@ -57,12 +66,32 @@ export class Notification {
   })
   deliveryChannel: NotificationChannel;
 
-  @Column({ name: 'is_read', default: false })
+  @Column({
+    name: 'is_read',
+    default: false,
+  })
   isRead: boolean;
 
-  @Column({ name: 'read_at', type: 'timestamp', nullable: true })
+  @Column({
+    name: 'read_at',
+    type: 'timestamp',
+    nullable: true,
+  })
   readAt?: Date | null;
 
-  @CreateDateColumn({ name: 'created_at' })
+  /**
+   * Quando preenchido, a notificação some do app do usuário.
+   * O registro continua no banco para histórico interno.
+   */
+  @Column({
+    name: 'deleted_at',
+    type: 'timestamp',
+    nullable: true,
+  })
+  deletedAt?: Date | null;
+
+  @CreateDateColumn({
+    name: 'created_at',
+  })
   createdAt: Date;
 }

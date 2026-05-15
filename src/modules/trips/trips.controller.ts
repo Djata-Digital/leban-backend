@@ -24,7 +24,6 @@ export class TripsController {
 
   /**
    * Cria uma nova viagem.
-   * Apenas Admin e Seller podem criar viagem.
    */
   @Roles(Role.ADMIN, Role.SELLER)
   @Post()
@@ -43,6 +42,13 @@ export class TripsController {
 
   /**
    * Pesquisa viagens disponíveis para passageiro.
+   *
+   * Agora aceita:
+   * - origin
+   * - destination
+   * - vehicleType
+   * - routeId
+   * - date
    */
   @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
   @Get('search')
@@ -50,12 +56,23 @@ export class TripsController {
     @Query('origin') origin?: string,
     @Query('destination') destination?: string,
     @Query('vehicleType') vehicleType?: string,
+    @Query('routeId') routeId?: string,
+    @Query('date') date?: string,
   ) {
-    return this.tripsService.search(origin, destination, vehicleType);
+    return this.tripsService.search({
+      origin,
+      destination,
+      vehicleType,
+      routeId,
+      date,
+    });
   }
 
   /**
    * Lista viagens disponíveis para passageiro comprar.
+   *
+   * Mantido por compatibilidade.
+   * Depois o app passageiro deve preferir /trips/search.
    */
   @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
   @Get('available')
@@ -65,7 +82,6 @@ export class TripsController {
 
   /**
    * Lista viagens atribuídas ao motorista logado.
-   * IMPORTANTE: esta rota precisa ficar antes de @Get(':id').
    */
   @Roles(Role.DRIVER)
   @Get('my-driver-trips')
