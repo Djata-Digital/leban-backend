@@ -91,7 +91,7 @@ export class SeatReservationsService {
     }
 
     const expiresAt = new Date();
-    expiresAt.setMinutes(expiresAt.getMinutes() + 3);
+    expiresAt.setMinutes(expiresAt.getMinutes() + 1);
 
     const seatReservation = this.seatReservationsRepository.create({
       trip,

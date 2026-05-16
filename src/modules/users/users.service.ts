@@ -36,17 +36,20 @@ export class UsersService {
   ) {}
 
   async create(data: CreateUserInput): Promise<User> {
-    await this.ensurePhoneIsAvailable(data.phoneNumber);
+    const phoneNumber = data.phoneNumber.trim();
+    const email = data.email?.trim() || null;
 
-    if (data.email) {
-      await this.ensureEmailIsAvailable(data.email);
+    await this.ensurePhoneIsAvailable(phoneNumber);
+
+    if (email) {
+      await this.ensureEmailIsAvailable(email);
     }
 
     const user = this.usersRepository.create({
-      fullName: data.fullName,
-      phoneNumber: data.phoneNumber,
-      email: data.email ?? null,
-      nickname: data.nickname ?? null,
+      fullName: data.fullName.trim(),
+      phoneNumber,
+      email,
+      nickname: data.nickname?.trim() || null,
       role: data.role ?? Role.PASSENGER,
       status: UserStatus.ACTIVE,
     });
@@ -61,16 +64,19 @@ export class UsersService {
   }
 
   async createAdmin(dto: CreateAdminDto): Promise<User> {
-    await this.ensurePhoneIsAvailable(dto.phoneNumber.trim());
+    const phoneNumber = dto.phoneNumber.trim();
+    const email = dto.email?.trim() || null;
 
-    if (dto.email) {
-      await this.ensureEmailIsAvailable(dto.email.trim());
+    await this.ensurePhoneIsAvailable(phoneNumber);
+
+    if (email) {
+      await this.ensureEmailIsAvailable(email);
     }
 
     const admin = this.usersRepository.create({
       fullName: dto.fullName.trim(),
-      phoneNumber: dto.phoneNumber.trim(),
-      email: dto.email?.trim() || null,
+      phoneNumber,
+      email,
       nickname: dto.nickname?.trim() || null,
       role: Role.ADMIN,
       status: dto.status ?? UserStatus.ACTIVE,
@@ -104,7 +110,13 @@ export class UsersService {
     }
 
     if (dto.fullName !== undefined) {
-      admin.fullName = dto.fullName.trim();
+      const nextFullName = dto.fullName.trim();
+
+      if (!nextFullName) {
+        throw new BadRequestException('Nome completo é obrigatório.');
+      }
+
+      admin.fullName = nextFullName;
     }
 
     if (dto.nickname !== undefined) {
@@ -195,7 +207,7 @@ export class UsersService {
       .createQueryBuilder('user')
       .addSelect('user.passwordHash')
       .where('user.phoneNumber = :phoneNumber', {
-        phoneNumber,
+        phoneNumber: phoneNumber.trim(),
       })
       .getOne();
   }
@@ -204,11 +216,27 @@ export class UsersService {
     userId: string,
     dto: UpdateProfileDto,
   ): Promise<User> {
-    const user = await this.findById(userId);
+    const user = await this.usersRepository
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.id = :userId', { userId })
+      .getOne();
 
-    if (dto.phoneNumber && dto.phoneNumber.trim() !== user.phoneNumber) {
-      await this.ensurePhoneIsAvailable(dto.phoneNumber.trim(), user.id);
-      user.phoneNumber = dto.phoneNumber.trim();
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+
+    if (dto.phoneNumber !== undefined) {
+      const nextPhoneNumber = dto.phoneNumber?.trim();
+
+      if (!nextPhoneNumber) {
+        throw new BadRequestException('Telefone é obrigatório.');
+      }
+
+      if (nextPhoneNumber !== user.phoneNumber) {
+        await this.ensurePhoneIsAvailable(nextPhoneNumber, user.id);
+        user.phoneNumber = nextPhoneNumber;
+      }
     }
 
     if (dto.email !== undefined) {
@@ -222,7 +250,13 @@ export class UsersService {
     }
 
     if (dto.fullName !== undefined) {
-      user.fullName = dto.fullName.trim();
+      const nextFullName = dto.fullName.trim();
+
+      if (!nextFullName) {
+        throw new BadRequestException('Nome completo é obrigatório.');
+      }
+
+      user.fullName = nextFullName;
     }
 
     if (dto.nickname !== undefined) {
@@ -233,6 +267,20 @@ export class UsersService {
       user.profilePhotoUrl = dto.profilePhotoUrl;
     }
 
+    if (dto.newPassword) {
+      if (!dto.currentPassword) {
+        throw new BadRequestException('Informe a senha atual.');
+      }
+
+      const passwordIsValid = await user.comparePassword(dto.currentPassword);
+
+      if (!passwordIsValid) {
+        throw new BadRequestException('Senha atual incorreta.');
+      }
+
+      user.password = dto.newPassword;
+    }
+
     if (dto.password) {
       user.password = dto.password;
     }
@@ -240,10 +288,6 @@ export class UsersService {
     return this.usersRepository.save(user);
   }
 
-  /**
-   * Salva token Expo Push Notification.
-   * Otimizado: só salva se mudou, evitando escrita desnecessária no banco.
-   */
   async updateExpoPushToken(
     userId: string,
     expoPushToken?: string,
@@ -284,13 +328,15 @@ export class UsersService {
     phoneNumber: string,
     ignoreUserId?: string,
   ): Promise<void> {
+    const cleanPhoneNumber = phoneNumber.trim();
+
     const existingUser = await this.usersRepository.findOne({
       where: ignoreUserId
         ? {
-            phoneNumber,
+            phoneNumber: cleanPhoneNumber,
             id: Not(ignoreUserId),
           }
-        : { phoneNumber },
+        : { phoneNumber: cleanPhoneNumber },
     });
 
     if (existingUser) {
@@ -304,13 +350,15 @@ export class UsersService {
     email: string,
     ignoreUserId?: string,
   ): Promise<void> {
+    const cleanEmail = email.trim();
+
     const existingUser = await this.usersRepository.findOne({
       where: ignoreUserId
         ? {
-            email,
+            email: cleanEmail,
             id: Not(ignoreUserId),
           }
-        : { email },
+        : { email: cleanEmail },
     });
 
     if (existingUser) {
