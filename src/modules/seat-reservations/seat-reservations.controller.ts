@@ -13,7 +13,7 @@ export class SeatReservationsController {
   constructor(private readonly service: SeatReservationsService) {}
 
   /**
-   * Segura temporariamente um assento por 15 minutos.
+   * Segura temporariamente um assento por 1 minutos.
    *
    * Usa status HELD.
    * Serve quando o passageiro toca no assento antes de confirmar reserva.

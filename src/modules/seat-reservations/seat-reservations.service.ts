@@ -41,7 +41,7 @@ export class SeatReservationsService {
   ) {}
 
   /**
-   * Segura temporariamente um assento por 3 minutos.
+   * Segura temporariamente um assento por 1 minutos.
    * Isso acontece quando o passageiro toca no assento, antes de confirmar a reserva.
    */
   async holdSeat(dto: {
