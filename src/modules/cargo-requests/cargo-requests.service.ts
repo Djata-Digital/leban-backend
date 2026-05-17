@@ -67,8 +67,11 @@ export class CargoRequestsService {
   private async recalculateBookingTotal(booking: Booking): Promise<void> {
     booking.totalAmount =
       Number(booking.subtotalAmount || 0) +
+      Number(booking.systemFeeAmount || 0) +
       Number(booking.cargoAmount || 0) -
       Number(booking.discountAmount || 0);
+
+    booking.grossAmount = booking.totalAmount;
 
     await this.bookingsRepository.save(booking);
   }
