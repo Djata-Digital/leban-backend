@@ -42,10 +42,6 @@ export class SeatReservationsService {
     private readonly dataSource: DataSource,
   ) {}
 
-  /**
-   * Trata erro de duplicidade do PostgreSQL.
-   * Isso acontece quando dois usuários tentam reservar o mesmo assento ao mesmo tempo.
-   */
   private handleDuplicateSeatError(error: any): never {
     if (error?.code === '23505') {
       throw new BadRequestException(
@@ -56,9 +52,6 @@ export class SeatReservationsService {
     throw error;
   }
 
-  /**
-   * Expira apenas seleções temporárias HELD dentro de uma transação.
-   */
   private async expireOldReservationsInTransaction(
     manager: EntityManager,
   ): Promise<void> {
@@ -79,10 +72,6 @@ export class SeatReservationsService {
       .execute();
   }
 
-  /**
-   * Segura temporariamente um assento por 1 minuto.
-   * Isso acontece quando o passageiro toca no assento, antes de confirmar a reserva.
-   */
   async holdSeat(dto: {
     tripId: string;
     vehicleSeatId: string;
@@ -103,13 +92,14 @@ export class SeatReservationsService {
           throw new NotFoundException('Viagem não encontrada.');
         }
 
-        const vehicleSeat = await vehicleSeatsRepository.findOne({
-          where: { id: dto.vehicleSeatId },
-          relations: ['vehicle'],
-          lock: {
-            mode: 'pessimistic_write',
-          },
-        });
+        const vehicleSeat = await vehicleSeatsRepository
+          .createQueryBuilder('vehicleSeat')
+          .innerJoinAndSelect('vehicleSeat.vehicle', 'vehicle')
+          .where('vehicleSeat.id = :id', {
+            id: dto.vehicleSeatId,
+          })
+          .setLock('pessimistic_write')
+          .getOne();
 
         if (!vehicleSeat) {
           throw new NotFoundException('Assento não encontrado.');
@@ -123,20 +113,23 @@ export class SeatReservationsService {
 
         await this.expireOldReservationsInTransaction(manager);
 
-        const activeReservation = await seatReservationsRepository.findOne({
-          where: {
-            trip: { id: trip.id },
-            vehicleSeat: { id: vehicleSeat.id },
-            reservationStatus: In([
+        const activeReservation = await seatReservationsRepository
+          .createQueryBuilder('reservation')
+          .where('reservation."tripId" = :tripId', {
+            tripId: trip.id,
+          })
+          .andWhere('reservation."vehicleSeatId" = :vehicleSeatId', {
+            vehicleSeatId: vehicleSeat.id,
+          })
+          .andWhere('reservation.reservation_status IN (:...statuses)', {
+            statuses: [
               SeatReservationStatus.HELD,
               SeatReservationStatus.RESERVED,
               SeatReservationStatus.SOLD,
-            ]),
-          },
-          lock: {
-            mode: 'pessimistic_write',
-          },
-        });
+            ],
+          })
+          .setLock('pessimistic_write')
+          .getOne();
 
         if (activeReservation) {
           throw new BadRequestException('Este assento já está ocupado.');
@@ -182,9 +175,6 @@ export class SeatReservationsService {
     }
   }
 
-  /**
-   * Libera uma seleção temporária antes da confirmação.
-   */
   async releaseHeldSeat(dto: {
     tripId: string;
     vehicleSeatId: string;
@@ -222,15 +212,6 @@ export class SeatReservationsService {
     return saved;
   }
 
-  /**
-   * Reserva definitivamente o assento depois que a reserva principal já foi criada.
-   *
-   * Proteção importante:
-   * - usa transaction;
-   * - usa lock no assento;
-   * - verifica novamente dentro da transaction;
-   * - depende também do índice único no banco.
-   */
   async reserveSeat(dto: CreateSeatReservationDto): Promise<SeatReservation> {
     try {
       const result = await this.dataSource.transaction(async (manager) => {
@@ -264,13 +245,14 @@ export class SeatReservationsService {
           );
         }
 
-        const vehicleSeat = await vehicleSeatsRepository.findOne({
-          where: { id: dto.vehicleSeatId },
-          relations: ['vehicle'],
-          lock: {
-            mode: 'pessimistic_write',
-          },
-        });
+        const vehicleSeat = await vehicleSeatsRepository
+          .createQueryBuilder('vehicleSeat')
+          .innerJoinAndSelect('vehicleSeat.vehicle', 'vehicle')
+          .where('vehicleSeat.id = :id', {
+            id: dto.vehicleSeatId,
+          })
+          .setLock('pessimistic_write')
+          .getOne();
 
         if (!vehicleSeat) {
           throw new NotFoundException('Assento não encontrado.');
@@ -284,31 +266,27 @@ export class SeatReservationsService {
 
         await this.expireOldReservationsInTransaction(manager);
 
-        const activeReservation = await seatReservationsRepository.findOne({
-          where: {
-            trip: { id: trip.id },
-            vehicleSeat: { id: vehicleSeat.id },
-            reservationStatus: In([
+        const activeReservation = await seatReservationsRepository
+          .createQueryBuilder('reservation')
+          .where('reservation."tripId" = :tripId', {
+            tripId: trip.id,
+          })
+          .andWhere('reservation."vehicleSeatId" = :vehicleSeatId', {
+            vehicleSeatId: vehicleSeat.id,
+          })
+          .andWhere('reservation.reservation_status IN (:...statuses)', {
+            statuses: [
               SeatReservationStatus.HELD,
               SeatReservationStatus.RESERVED,
               SeatReservationStatus.SOLD,
-            ]),
-          },
-          relations: ['booking', 'vehicleSeat'],
-          lock: {
-            mode: 'pessimistic_write',
-          },
-        });
+            ],
+          })
+          .setLock('pessimistic_write')
+          .getOne();
 
         if (activeReservation) {
-          /**
-           * Se existir HELD ainda sem booking, transforma em RESERVED.
-           * Isso mantém compatibilidade com o fluxo atual do app.
-           */
           if (
-            activeReservation.reservationStatus ===
-              SeatReservationStatus.HELD &&
-            !activeReservation.booking
+            activeReservation.reservationStatus === SeatReservationStatus.HELD
           ) {
             activeReservation.booking = booking;
             activeReservation.reservationStatus =
@@ -485,10 +463,6 @@ export class SeatReservationsService {
     return saved;
   }
 
-  /**
-   * Expira apenas seleções temporárias HELD.
-   * Nunca expira RESERVED ou SOLD.
-   */
   async expireOldReservations(): Promise<SeatReservation[]> {
     const now = new Date();
 
