@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 
 import {
   SeatReservation,
@@ -38,85 +38,148 @@ export class SeatReservationsService {
     private readonly notificationsService: NotificationsService,
 
     private readonly notificationsGateway: NotificationsGateway,
+
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
-   * Segura temporariamente um assento por 1 minutos.
+   * Trata erro de duplicidade do PostgreSQL.
+   * Isso acontece quando dois usuários tentam reservar o mesmo assento ao mesmo tempo.
+   */
+  private handleDuplicateSeatError(error: any): never {
+    if (error?.code === '23505') {
+      throw new BadRequestException(
+        'Este assento acabou de ser reservado por outro passageiro. Escolha outro assento.',
+      );
+    }
+
+    throw error;
+  }
+
+  /**
+   * Expira apenas seleções temporárias HELD dentro de uma transação.
+   */
+  private async expireOldReservationsInTransaction(
+    manager: EntityManager,
+  ): Promise<void> {
+    const now = new Date();
+
+    await manager
+      .createQueryBuilder()
+      .update(SeatReservation)
+      .set({
+        reservationStatus: SeatReservationStatus.EXPIRED,
+        expiresAt: null,
+      })
+      .where('reservation_status = :status', {
+        status: SeatReservationStatus.HELD,
+      })
+      .andWhere('expires_at IS NOT NULL')
+      .andWhere('expires_at < :now', { now })
+      .execute();
+  }
+
+  /**
+   * Segura temporariamente um assento por 1 minuto.
    * Isso acontece quando o passageiro toca no assento, antes de confirmar a reserva.
    */
   async holdSeat(dto: {
     tripId: string;
     vehicleSeatId: string;
   }): Promise<SeatReservation> {
-    const trip = await this.tripsRepository.findOne({
-      where: { id: dto.tripId },
-      relations: ['vehicle'],
-    });
+    try {
+      const result = await this.dataSource.transaction(async (manager) => {
+        const tripsRepository = manager.getRepository(Trip);
+        const vehicleSeatsRepository = manager.getRepository(VehicleSeat);
+        const seatReservationsRepository =
+          manager.getRepository(SeatReservation);
 
-    if (!trip) {
-      throw new NotFoundException('Viagem não encontrada.');
+        const trip = await tripsRepository.findOne({
+          where: { id: dto.tripId },
+          relations: ['vehicle'],
+        });
+
+        if (!trip) {
+          throw new NotFoundException('Viagem não encontrada.');
+        }
+
+        const vehicleSeat = await vehicleSeatsRepository.findOne({
+          where: { id: dto.vehicleSeatId },
+          relations: ['vehicle'],
+          lock: {
+            mode: 'pessimistic_write',
+          },
+        });
+
+        if (!vehicleSeat) {
+          throw new NotFoundException('Assento não encontrado.');
+        }
+
+        if (vehicleSeat.vehicle.id !== trip.vehicle.id) {
+          throw new BadRequestException(
+            'Este assento não pertence ao veículo desta viagem.',
+          );
+        }
+
+        await this.expireOldReservationsInTransaction(manager);
+
+        const activeReservation = await seatReservationsRepository.findOne({
+          where: {
+            trip: { id: trip.id },
+            vehicleSeat: { id: vehicleSeat.id },
+            reservationStatus: In([
+              SeatReservationStatus.HELD,
+              SeatReservationStatus.RESERVED,
+              SeatReservationStatus.SOLD,
+            ]),
+          },
+          lock: {
+            mode: 'pessimistic_write',
+          },
+        });
+
+        if (activeReservation) {
+          throw new BadRequestException('Este assento já está ocupado.');
+        }
+
+        const expiresAt = new Date();
+        expiresAt.setMinutes(expiresAt.getMinutes() + 1);
+
+        const seatReservation = seatReservationsRepository.create({
+          trip,
+          vehicleSeat,
+          booking: null,
+          reservationStatus: SeatReservationStatus.HELD,
+          reservedAt: new Date(),
+          expiresAt,
+        });
+
+        const saved = await seatReservationsRepository.save(seatReservation);
+
+        return {
+          saved,
+          tripId: trip.id,
+          vehicleSeatId: vehicleSeat.id,
+          expiresAt,
+        };
+      });
+
+      await this.checkTripAutoStatus(result.tripId);
+
+      this.sendSeatRealtimeUpdate({
+        tripId: result.tripId,
+        vehicleSeatId: result.vehicleSeatId,
+        reservationStatus: SeatReservationStatus.HELD,
+        isAvailable: false,
+        expiresAt: result.expiresAt,
+      });
+
+      await this.sendTripRealtimeUpdate(result.tripId);
+
+      return result.saved;
+    } catch (error) {
+      this.handleDuplicateSeatError(error);
     }
-
-    const vehicleSeat = await this.vehicleSeatsRepository.findOne({
-      where: { id: dto.vehicleSeatId },
-      relations: ['vehicle'],
-    });
-
-    if (!vehicleSeat) {
-      throw new NotFoundException('Assento não encontrado.');
-    }
-
-    if (vehicleSeat.vehicle.id !== trip.vehicle.id) {
-      throw new BadRequestException(
-        'Este assento não pertence ao veículo desta viagem.',
-      );
-    }
-
-    await this.expireOldReservations();
-
-    const activeReservation = await this.seatReservationsRepository.findOne({
-      where: {
-        trip: { id: trip.id },
-        vehicleSeat: { id: vehicleSeat.id },
-        reservationStatus: In([
-          SeatReservationStatus.HELD,
-          SeatReservationStatus.RESERVED,
-          SeatReservationStatus.SOLD,
-        ]),
-      },
-    });
-
-    if (activeReservation) {
-      throw new BadRequestException('Este assento já está ocupado.');
-    }
-
-    const expiresAt = new Date();
-    expiresAt.setMinutes(expiresAt.getMinutes() + 1);
-
-    const seatReservation = this.seatReservationsRepository.create({
-      trip,
-      vehicleSeat,
-      booking: null,
-      reservationStatus: SeatReservationStatus.HELD,
-      reservedAt: new Date(),
-      expiresAt,
-    });
-
-    const saved = await this.seatReservationsRepository.save(seatReservation);
-
-    await this.checkTripAutoStatus(trip.id);
-
-    this.sendSeatRealtimeUpdate({
-      tripId: trip.id,
-      vehicleSeatId: vehicleSeat.id,
-      reservationStatus: SeatReservationStatus.HELD,
-      isAvailable: false,
-      expiresAt,
-    });
-
-    await this.sendTripRealtimeUpdate(trip.id);
-
-    return saved;
   }
 
   /**
@@ -162,122 +225,146 @@ export class SeatReservationsService {
   /**
    * Reserva definitivamente o assento depois que a reserva principal já foi criada.
    *
-   * Se existir HELD para o mesmo assento, ele vira RESERVED.
-   * Se não existir HELD, cria RESERVED diretamente.
+   * Proteção importante:
+   * - usa transaction;
+   * - usa lock no assento;
+   * - verifica novamente dentro da transaction;
+   * - depende também do índice único no banco.
    */
   async reserveSeat(dto: CreateSeatReservationDto): Promise<SeatReservation> {
-    const trip = await this.tripsRepository.findOne({
-      where: { id: dto.tripId },
-      relations: ['vehicle'],
-    });
+    try {
+      const result = await this.dataSource.transaction(async (manager) => {
+        const tripsRepository = manager.getRepository(Trip);
+        const bookingsRepository = manager.getRepository(Booking);
+        const vehicleSeatsRepository = manager.getRepository(VehicleSeat);
+        const seatReservationsRepository =
+          manager.getRepository(SeatReservation);
 
-    if (!trip) {
-      throw new NotFoundException('Viagem não encontrada.');
-    }
+        const trip = await tripsRepository.findOne({
+          where: { id: dto.tripId },
+          relations: ['vehicle'],
+        });
 
-    const booking = await this.bookingsRepository.findOne({
-      where: { id: dto.bookingId },
-      relations: ['trip', 'buyer'],
-    });
+        if (!trip) {
+          throw new NotFoundException('Viagem não encontrada.');
+        }
 
-    if (!booking) {
-      throw new NotFoundException('Reserva principal não encontrada.');
-    }
+        const booking = await bookingsRepository.findOne({
+          where: { id: dto.bookingId },
+          relations: ['trip', 'buyer'],
+        });
 
-    if (booking.trip.id !== trip.id) {
-      throw new BadRequestException(
-        'Esta reserva não pertence à viagem informada.',
-      );
-    }
+        if (!booking) {
+          throw new NotFoundException('Reserva principal não encontrada.');
+        }
 
-    const vehicleSeat = await this.vehicleSeatsRepository.findOne({
-      where: { id: dto.vehicleSeatId },
-      relations: ['vehicle'],
-    });
+        if (booking.trip.id !== trip.id) {
+          throw new BadRequestException(
+            'Esta reserva não pertence à viagem informada.',
+          );
+        }
 
-    if (!vehicleSeat) {
-      throw new NotFoundException('Assento não encontrado.');
-    }
+        const vehicleSeat = await vehicleSeatsRepository.findOne({
+          where: { id: dto.vehicleSeatId },
+          relations: ['vehicle'],
+          lock: {
+            mode: 'pessimistic_write',
+          },
+        });
 
-    if (vehicleSeat.vehicle.id !== trip.vehicle.id) {
-      throw new BadRequestException(
-        'Este assento não pertence ao veículo desta viagem.',
-      );
-    }
+        if (!vehicleSeat) {
+          throw new NotFoundException('Assento não encontrado.');
+        }
 
-    await this.expireOldReservations();
+        if (vehicleSeat.vehicle.id !== trip.vehicle.id) {
+          throw new BadRequestException(
+            'Este assento não pertence ao veículo desta viagem.',
+          );
+        }
 
-    const finalReservation = await this.seatReservationsRepository.findOne({
-      where: {
-        trip: { id: trip.id },
-        vehicleSeat: { id: vehicleSeat.id },
-        reservationStatus: In([
-          SeatReservationStatus.RESERVED,
-          SeatReservationStatus.SOLD,
-        ]),
-      },
-    });
+        await this.expireOldReservationsInTransaction(manager);
 
-    if (finalReservation) {
-      throw new BadRequestException('Este assento já está reservado ou vendido.');
-    }
+        const activeReservation = await seatReservationsRepository.findOne({
+          where: {
+            trip: { id: trip.id },
+            vehicleSeat: { id: vehicleSeat.id },
+            reservationStatus: In([
+              SeatReservationStatus.HELD,
+              SeatReservationStatus.RESERVED,
+              SeatReservationStatus.SOLD,
+            ]),
+          },
+          relations: ['booking', 'vehicleSeat'],
+          lock: {
+            mode: 'pessimistic_write',
+          },
+        });
 
-    const heldReservation = await this.seatReservationsRepository.findOne({
-      where: {
-        trip: { id: trip.id },
-        vehicleSeat: { id: vehicleSeat.id },
-        reservationStatus: SeatReservationStatus.HELD,
-      },
-      relations: ['vehicleSeat'],
-    });
+        if (activeReservation) {
+          /**
+           * Se existir HELD ainda sem booking, transforma em RESERVED.
+           * Isso mantém compatibilidade com o fluxo atual do app.
+           */
+          if (
+            activeReservation.reservationStatus ===
+              SeatReservationStatus.HELD &&
+            !activeReservation.booking
+          ) {
+            activeReservation.booking = booking;
+            activeReservation.reservationStatus =
+              SeatReservationStatus.RESERVED;
+            activeReservation.expiresAt = null;
+            activeReservation.reservedAt = new Date();
 
-    if (heldReservation) {
-      heldReservation.booking = booking;
-      heldReservation.reservationStatus = SeatReservationStatus.RESERVED;
-      heldReservation.expiresAt = null;
-      heldReservation.reservedAt = new Date();
+            const saved =
+              await seatReservationsRepository.save(activeReservation);
 
-      const saved = await this.seatReservationsRepository.save(heldReservation);
+            return {
+              saved,
+              tripId: trip.id,
+              vehicleSeatId: vehicleSeat.id,
+            };
+          }
 
-      await this.checkTripAutoStatus(trip.id);
+          throw new BadRequestException(
+            'Este assento já está reservado ou vendido.',
+          );
+        }
+
+        const seatReservation = seatReservationsRepository.create({
+          trip,
+          booking,
+          vehicleSeat,
+          reservationStatus: SeatReservationStatus.RESERVED,
+          reservedAt: new Date(),
+          expiresAt: null,
+        });
+
+        const saved = await seatReservationsRepository.save(seatReservation);
+
+        return {
+          saved,
+          tripId: trip.id,
+          vehicleSeatId: vehicleSeat.id,
+        };
+      });
+
+      await this.checkTripAutoStatus(result.tripId);
 
       this.sendSeatRealtimeUpdate({
-        tripId: trip.id,
-        vehicleSeatId: vehicleSeat.id,
+        tripId: result.tripId,
+        vehicleSeatId: result.vehicleSeatId,
         reservationStatus: SeatReservationStatus.RESERVED,
         isAvailable: false,
         expiresAt: null,
       });
 
-      await this.sendTripRealtimeUpdate(trip.id);
+      await this.sendTripRealtimeUpdate(result.tripId);
 
-      return saved;
+      return result.saved;
+    } catch (error) {
+      this.handleDuplicateSeatError(error);
     }
-
-    const seatReservation = this.seatReservationsRepository.create({
-      trip,
-      booking,
-      vehicleSeat,
-      reservationStatus: SeatReservationStatus.RESERVED,
-      reservedAt: new Date(),
-      expiresAt: null,
-    });
-
-    const saved = await this.seatReservationsRepository.save(seatReservation);
-
-    await this.checkTripAutoStatus(trip.id);
-
-    this.sendSeatRealtimeUpdate({
-      tripId: trip.id,
-      vehicleSeatId: vehicleSeat.id,
-      reservationStatus: SeatReservationStatus.RESERVED,
-      isAvailable: false,
-      expiresAt: null,
-    });
-
-    await this.sendTripRealtimeUpdate(trip.id);
-
-    return saved;
   }
 
   async findByTrip(tripId: string): Promise<SeatReservation[]> {
