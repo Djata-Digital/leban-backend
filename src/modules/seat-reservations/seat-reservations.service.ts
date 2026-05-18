@@ -72,6 +72,54 @@ export class SeatReservationsService {
       .execute();
   }
 
+  private async findAndLockVehicleSeat(
+    manager: EntityManager,
+    vehicleSeatId: string,
+  ): Promise<VehicleSeat> {
+    const vehicleSeatsRepository = manager.getRepository(VehicleSeat);
+
+    const vehicleSeat = await vehicleSeatsRepository.findOne({
+      where: { id: vehicleSeatId },
+      relations: ['vehicle'],
+    });
+
+    if (!vehicleSeat) {
+      throw new NotFoundException('Assento não encontrado.');
+    }
+
+    await vehicleSeatsRepository.findOne({
+      where: { id: vehicleSeatId },
+      lock: {
+        mode: 'pessimistic_write',
+      },
+    });
+
+    return vehicleSeat;
+  }
+
+  private async findActiveReservationWithLock(
+    manager: EntityManager,
+    tripId: string,
+    vehicleSeatId: string,
+  ): Promise<SeatReservation | null> {
+    return manager
+      .getRepository(SeatReservation)
+      .createQueryBuilder('reservation')
+      .where('reservation."tripId" = :tripId', { tripId })
+      .andWhere('reservation."vehicleSeatId" = :vehicleSeatId', {
+        vehicleSeatId,
+      })
+      .andWhere('reservation.reservation_status IN (:...statuses)', {
+        statuses: [
+          SeatReservationStatus.HELD,
+          SeatReservationStatus.RESERVED,
+          SeatReservationStatus.SOLD,
+        ],
+      })
+      .setLock('pessimistic_write')
+      .getOne();
+  }
+
   async holdSeat(dto: {
     tripId: string;
     vehicleSeatId: string;
@@ -79,7 +127,6 @@ export class SeatReservationsService {
     try {
       const result = await this.dataSource.transaction(async (manager) => {
         const tripsRepository = manager.getRepository(Trip);
-        const vehicleSeatsRepository = manager.getRepository(VehicleSeat);
         const seatReservationsRepository =
           manager.getRepository(SeatReservation);
 
@@ -92,18 +139,10 @@ export class SeatReservationsService {
           throw new NotFoundException('Viagem não encontrada.');
         }
 
-        const vehicleSeat = await vehicleSeatsRepository
-          .createQueryBuilder('vehicleSeat')
-          .innerJoinAndSelect('vehicleSeat.vehicle', 'vehicle')
-          .where('vehicleSeat.id = :id', {
-            id: dto.vehicleSeatId,
-          })
-          .setLock('pessimistic_write')
-          .getOne();
-
-        if (!vehicleSeat) {
-          throw new NotFoundException('Assento não encontrado.');
-        }
+        const vehicleSeat = await this.findAndLockVehicleSeat(
+          manager,
+          dto.vehicleSeatId,
+        );
 
         if (vehicleSeat.vehicle.id !== trip.vehicle.id) {
           throw new BadRequestException(
@@ -113,23 +152,11 @@ export class SeatReservationsService {
 
         await this.expireOldReservationsInTransaction(manager);
 
-        const activeReservation = await seatReservationsRepository
-          .createQueryBuilder('reservation')
-          .where('reservation."tripId" = :tripId', {
-            tripId: trip.id,
-          })
-          .andWhere('reservation."vehicleSeatId" = :vehicleSeatId', {
-            vehicleSeatId: vehicleSeat.id,
-          })
-          .andWhere('reservation.reservation_status IN (:...statuses)', {
-            statuses: [
-              SeatReservationStatus.HELD,
-              SeatReservationStatus.RESERVED,
-              SeatReservationStatus.SOLD,
-            ],
-          })
-          .setLock('pessimistic_write')
-          .getOne();
+        const activeReservation = await this.findActiveReservationWithLock(
+          manager,
+          trip.id,
+          vehicleSeat.id,
+        );
 
         if (activeReservation) {
           throw new BadRequestException('Este assento já está ocupado.');
@@ -217,7 +244,6 @@ export class SeatReservationsService {
       const result = await this.dataSource.transaction(async (manager) => {
         const tripsRepository = manager.getRepository(Trip);
         const bookingsRepository = manager.getRepository(Booking);
-        const vehicleSeatsRepository = manager.getRepository(VehicleSeat);
         const seatReservationsRepository =
           manager.getRepository(SeatReservation);
 
@@ -245,18 +271,10 @@ export class SeatReservationsService {
           );
         }
 
-        const vehicleSeat = await vehicleSeatsRepository
-          .createQueryBuilder('vehicleSeat')
-          .innerJoinAndSelect('vehicleSeat.vehicle', 'vehicle')
-          .where('vehicleSeat.id = :id', {
-            id: dto.vehicleSeatId,
-          })
-          .setLock('pessimistic_write')
-          .getOne();
-
-        if (!vehicleSeat) {
-          throw new NotFoundException('Assento não encontrado.');
-        }
+        const vehicleSeat = await this.findAndLockVehicleSeat(
+          manager,
+          dto.vehicleSeatId,
+        );
 
         if (vehicleSeat.vehicle.id !== trip.vehicle.id) {
           throw new BadRequestException(
@@ -266,23 +284,11 @@ export class SeatReservationsService {
 
         await this.expireOldReservationsInTransaction(manager);
 
-        const activeReservation = await seatReservationsRepository
-          .createQueryBuilder('reservation')
-          .where('reservation."tripId" = :tripId', {
-            tripId: trip.id,
-          })
-          .andWhere('reservation."vehicleSeatId" = :vehicleSeatId', {
-            vehicleSeatId: vehicleSeat.id,
-          })
-          .andWhere('reservation.reservation_status IN (:...statuses)', {
-            statuses: [
-              SeatReservationStatus.HELD,
-              SeatReservationStatus.RESERVED,
-              SeatReservationStatus.SOLD,
-            ],
-          })
-          .setLock('pessimistic_write')
-          .getOne();
+        const activeReservation = await this.findActiveReservationWithLock(
+          manager,
+          trip.id,
+          vehicleSeat.id,
+        );
 
         if (activeReservation) {
           if (
