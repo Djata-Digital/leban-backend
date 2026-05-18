@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 
 import {
   Booking,
@@ -384,6 +384,199 @@ export class BookingsService {
       },
     });
   }
+
+  async findMyBookingsSummary(userId: string): Promise<any[]> {
+    const bookings = await this.bookingsRepository.find({
+      where: {
+        buyer: { id: userId },
+        passengerDeletedAt: IsNull(),
+      },
+      relations: {
+        trip: {
+          route: true,
+          vehicle: true,
+          driver: true,
+        },
+        boardingPoint: true,
+        dropoffPoint: true,
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+
+    const bookingIds = bookings.map((booking) => booking.id);
+
+    if (bookingIds.length === 0) {
+      return [];
+    }
+
+    const seatReservations = await this.seatReservationsRepository.find({
+      where: {
+        booking: { id: In(bookingIds) },
+        reservationStatus: In([
+          SeatReservationStatus.RESERVED,
+          SeatReservationStatus.SOLD,
+        ]),
+      },
+      relations: {
+        booking: true,
+        vehicleSeat: true,
+      },
+    });
+
+    const cargos = await this.cargoRequestsRepository.find({
+      where: {
+        booking: { id: In(bookingIds) },
+      },
+      relations: {
+        booking: true,
+      },
+    });
+
+    const seatsByBooking = new Map<string, SeatReservation[]>();
+    const cargoByBooking = new Map<string, CargoRequest>();
+
+    for (const reservation of seatReservations) {
+      const bookingId = reservation.booking?.id;
+      if (!bookingId) continue;
+
+      const current = seatsByBooking.get(bookingId) || [];
+      current.push(reservation);
+      seatsByBooking.set(bookingId, current);
+    }
+
+    for (const cargo of cargos) {
+      const bookingId = cargo.booking?.id;
+      if (!bookingId) continue;
+
+      cargoByBooking.set(bookingId, cargo);
+    }
+
+    return bookings.map((booking) => {
+      const reservations = seatsByBooking.get(booking.id) || [];
+
+      const orderedReservations = reservations.sort((a, b) => {
+        const seatA = Number(a.vehicleSeat?.seatNumber || 0);
+        const seatB = Number(b.vehicleSeat?.seatNumber || 0);
+        return seatA - seatB;
+      });
+
+      const reservedSeatLabels = orderedReservations
+        .map(
+          (reservation) =>
+            reservation.vehicleSeat?.seatLabel ||
+            reservation.vehicleSeat?.seatNumber,
+        )
+        .filter(Boolean)
+        .join(', ');
+
+      const cargo = cargoByBooking.get(booking.id) || null;
+
+      return {
+        id: booking.id,
+        bookingCode: booking.bookingCode,
+        passengerName: booking.passengerName,
+        passengerPhone: booking.passengerPhone,
+        bookingStatus: booking.bookingStatus,
+        paymentStatus: booking.paymentStatus,
+        seatQuantity: booking.seatQuantity,
+        reservedSeatLabels,
+
+        ticketAmount: booking.ticketAmount,
+        subtotalAmount: booking.subtotalAmount,
+        systemFeeAmount: booking.systemFeeAmount,
+        cargoAmount: booking.cargoAmount,
+        discountAmount: booking.discountAmount,
+        grossAmount: booking.grossAmount,
+        totalAmount: booking.totalAmount,
+
+        confirmedAt: booking.confirmedAt,
+        cancelledAt: booking.cancelledAt,
+        boardedAt: booking.boardedAt,
+        createdAt: booking.createdAt,
+
+        boardingPoint: booking.boardingPoint
+          ? {
+              id: booking.boardingPoint.id,
+              name: booking.boardingPoint.name,
+              orderNumber: booking.boardingPoint.orderNumber,
+            }
+          : null,
+
+        dropoffPoint: booking.dropoffPoint
+          ? {
+              id: booking.dropoffPoint.id,
+              name: booking.dropoffPoint.name,
+              orderNumber: booking.dropoffPoint.orderNumber,
+            }
+          : null,
+
+        trip: booking.trip
+          ? {
+              id: booking.trip.id,
+              status: booking.trip.status,
+              boardingDate: booking.trip.boardingDate,
+              departureDatetime: booking.trip.departureDatetime,
+              baseFare: booking.trip.baseFare,
+
+              route: booking.trip.route
+                ? {
+                    id: booking.trip.route.id,
+                    originName: booking.trip.route.originName,
+                    destinationName: booking.trip.route.destinationName,
+                  }
+                : null,
+
+              vehicle: booking.trip.vehicle
+                ? {
+                    id: booking.trip.vehicle.id,
+                    brand: booking.trip.vehicle.brand,
+                    model: booking.trip.vehicle.model,
+                    color: booking.trip.vehicle.color,
+                    plateNumber: booking.trip.vehicle.plateNumber,
+                    vehicleImageUrl: booking.trip.vehicle.vehicleImageUrl,
+                  }
+                : null,
+
+              driver: booking.trip.driver
+                ? {
+                    id: booking.trip.driver.id,
+                    fullName: booking.trip.driver.fullName,
+                    phoneNumber: booking.trip.driver.phoneNumber,
+                  }
+                : null,
+            }
+          : null,
+
+        seatReservations: orderedReservations.map((reservation) => ({
+          id: reservation.id,
+          reservationStatus: reservation.reservationStatus,
+          vehicleSeat: reservation.vehicleSeat
+            ? {
+                id: reservation.vehicleSeat.id,
+                seatNumber: reservation.vehicleSeat.seatNumber,
+                seatLabel: reservation.vehicleSeat.seatLabel,
+              }
+            : null,
+        })),
+
+        cargoRequest: cargo
+          ? {
+              id: cargo.id,
+              cargoDescription: cargo.cargoDescription,
+              estimatedWeightKg: cargo.estimatedWeightKg,
+              photoUrl: cargo.photoUrl,
+              finalPrice: cargo.finalPrice,
+              cargoStatus: cargo.cargoStatus,
+              passengerAccepted: cargo.passengerAccepted,
+            }
+          : null,
+      };
+    });
+  }
+
+  
 
   async deleteForPassenger(
     bookingId: string,

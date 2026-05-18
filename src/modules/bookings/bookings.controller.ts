@@ -39,6 +39,13 @@ export class BookingsController {
   }
 
   @Roles(Role.PASSENGER)
+  @Get('my-summary')
+  findMyBookingsSummary(@Request() req: { user: any }) {
+    const userId = req.user?.id || req.user?.sub;
+    return this.bookingsService.findMyBookingsSummary(userId);
+  }
+
+  @Roles(Role.PASSENGER)
   @Patch('delete-selected-for-passenger')
   deleteSelectedForPassenger(
     @Body() dto: { bookingIds: string[] },
