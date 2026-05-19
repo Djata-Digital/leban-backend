@@ -299,7 +299,150 @@ export class TripsService {
     return [];
   }
 
-  async findMyDriverTrips(driverId: string): Promise<Trip[]> {
+  async findAllLight(user: User) {
+    const activeStatuses = [TripStatus.SCHEDULED, TripStatus.BOARDING];
+
+    let routeIds: string[] = [];
+    let allowedPairs: Array<{ routeId: string; vehicleType: string }> = [];
+
+    if (user.role === Role.SELLER) {
+      const sellerId = this.getUserIdFromJwt(user);
+
+      const sellerRoutes = await this.sellerRoutesRepository.find({
+        where: {
+          seller: { id: sellerId },
+        },
+        relations: {
+          route: true,
+        },
+      });
+
+      if (sellerRoutes.length === 0) return [];
+
+      allowedPairs = sellerRoutes
+        .filter((item) => item.route?.id && item.vehicleType)
+        .map((item) => ({
+          routeId: item.route.id,
+          vehicleType: item.vehicleType,
+        }));
+
+      routeIds = [...new Set(allowedPairs.map((item) => item.routeId))];
+
+      if (routeIds.length === 0) return [];
+    }
+
+    const query = this.tripsRepository
+      .createQueryBuilder('trip')
+      .leftJoin('trip.route', 'route')
+      .leftJoin('trip.vehicle', 'vehicle')
+      .leftJoin('trip.driver', 'driver')
+      .select([
+        'trip.id',
+        'trip.departureMode',
+        'trip.boardingDate',
+        'trip.departureDatetime',
+        'trip.baseFare',
+        'trip.availableSeatsCount',
+        'trip.status',
+        'trip.createdAt',
+
+        'route.id',
+        'route.originName',
+        'route.destinationName',
+        'route.distanceKm',
+        'route.estimatedDurationMinutes',
+
+        'vehicle.id',
+        'vehicle.brand',
+        'vehicle.model',
+        'vehicle.plateNumber',
+        'vehicle.vehicleType',
+        'vehicle.seatCount',
+        'vehicle.vehicleImageUrl',
+
+        'driver.id',
+        'driver.fullName',
+        'driver.phoneNumber',
+      ])
+      .where('trip.status IN (:...statuses)', {
+        statuses: activeStatuses,
+      });
+
+    if (user.role === Role.SELLER) {
+      query.andWhere('route.id IN (:...routeIds)', { routeIds });
+    }
+
+    query
+      .orderBy('trip.boardingDate', 'ASC')
+      .addOrderBy('trip.departureDatetime', 'ASC')
+      .addOrderBy('trip.createdAt', 'DESC');
+
+    const trips = await query.getMany();
+
+    const filteredTrips =
+      user.role === Role.SELLER
+        ? trips.filter((trip) =>
+            allowedPairs.some(
+              (pair) =>
+                pair.routeId === trip.route?.id &&
+                pair.vehicleType === trip.vehicle?.vehicleType,
+            ),
+          )
+        : trips;
+
+    return filteredTrips.map((trip) => {
+      const totalSeats = Number(
+        trip.vehicle?.seatCount || trip.availableSeatsCount || 0,
+      );
+
+      const availableSeats = Number(trip.availableSeatsCount || 0);
+
+      return {
+        id: trip.id,
+        departureMode: trip.departureMode,
+        boardingDate: trip.boardingDate,
+        departureDatetime: trip.departureDatetime,
+        baseFare: trip.baseFare,
+        status: trip.status,
+
+        totalSeats,
+        availableSeatsCount: availableSeats,
+        realAvailableSeats: availableSeats,
+        occupiedSeatsCount: Math.max(totalSeats - availableSeats, 0),
+
+        route: trip.route
+          ? {
+              id: trip.route.id,
+              originName: trip.route.originName,
+              destinationName: trip.route.destinationName,
+              distanceKm: trip.route.distanceKm,
+              estimatedDurationMinutes: trip.route.estimatedDurationMinutes,
+            }
+          : null,
+
+        vehicle: trip.vehicle
+          ? {
+              id: trip.vehicle.id,
+              brand: trip.vehicle.brand,
+              model: trip.vehicle.model,
+              plateNumber: trip.vehicle.plateNumber,
+              vehicleType: trip.vehicle.vehicleType,
+              seatCount: trip.vehicle.seatCount,
+              vehicleImageUrl: trip.vehicle.vehicleImageUrl,
+            }
+          : null,
+
+        driver: trip.driver
+          ? {
+              id: trip.driver.id,
+              fullName: trip.driver.fullName,
+              phoneNumber: trip.driver.phoneNumber,
+            }
+          : null,
+      };
+    });
+  }
+    async findMyDriverTrips(driverId: string): Promise<Trip[]> {
     return this.tripsRepository.find({
       where: {
         driver: { id: driverId },
@@ -394,21 +537,30 @@ export class TripsService {
     }
 
     if (origin && origin.trim()) {
-      query.andWhere('LOWER(route.origin_name) LIKE LOWER(:origin)', {
-        origin: `%${origin.trim()}%`,
-      });
+      query.andWhere(
+        'LOWER(route.origin_name) LIKE LOWER(:origin)',
+        {
+          origin: `%${origin.trim()}%`,
+        },
+      );
     }
 
     if (destination && destination.trim()) {
-      query.andWhere('LOWER(route.destination_name) LIKE LOWER(:destination)', {
-        destination: `%${destination.trim()}%`,
-      });
+      query.andWhere(
+        'LOWER(route.destination_name) LIKE LOWER(:destination)',
+        {
+          destination: `%${destination.trim()}%`,
+        },
+      );
     }
 
     if (vehicleType && vehicleType !== 'all') {
-      query.andWhere('vehicle.vehicle_type = :vehicleType', {
-        vehicleType,
-      });
+      query.andWhere(
+        'vehicle.vehicle_type = :vehicleType',
+        {
+          vehicleType,
+        },
+      );
     }
 
     if (date && date.trim()) {
@@ -442,7 +594,9 @@ export class TripsService {
     });
 
     if (!trip) {
-      throw new NotFoundException('Viagem não encontrada.');
+      throw new NotFoundException(
+        'Viagem não encontrada.',
+      );
     }
 
     return trip;
@@ -457,11 +611,15 @@ export class TripsService {
     });
 
     if (!trip) {
-      throw new NotFoundException('Viagem não encontrada.');
+      throw new NotFoundException(
+        'Viagem não encontrada.',
+      );
     }
 
     if (!trip.vehicle) {
-      throw new BadRequestException('Esta viagem não possui veículo associado.');
+      throw new BadRequestException(
+        'Esta viagem não possui veículo associado.',
+      );
     }
 
     const seats = await this.vehicleSeatsRepository.find({
@@ -476,50 +634,73 @@ export class TripsService {
 
     const now = new Date();
 
-    const occupiedReservations = await this.seatReservationsRepository
-      .createQueryBuilder('reservation')
-      .leftJoinAndSelect('reservation.vehicleSeat', 'vehicleSeat')
-      .where('reservation.tripId = :tripId', { tripId: trip.id })
-      .andWhere(
-        `(
-          reservation.reservationStatus = :soldStatus
-          OR reservation.reservationStatus = :reservedStatus
-          OR (
-            reservation.reservationStatus = :heldStatus
-            AND reservation.expiresAt IS NOT NULL
-            AND reservation.expiresAt > :now
-          )
-        )`,
-        {
-          soldStatus: SeatReservationStatus.SOLD,
-          reservedStatus: SeatReservationStatus.RESERVED,
-          heldStatus: SeatReservationStatus.HELD,
-          now,
-        },
-      )
-      .getMany();
+    const occupiedReservations =
+      await this.seatReservationsRepository
+        .createQueryBuilder('reservation')
+        .leftJoinAndSelect(
+          'reservation.vehicleSeat',
+          'vehicleSeat',
+        )
+        .where(
+          'reservation.tripId = :tripId',
+          {
+            tripId: trip.id,
+          },
+        )
+        .andWhere(
+          `(
+            reservation.reservationStatus = :soldStatus
+            OR reservation.reservationStatus = :reservedStatus
+            OR (
+              reservation.reservationStatus = :heldStatus
+              AND reservation.expiresAt IS NOT NULL
+              AND reservation.expiresAt > :now
+            )
+          )`,
+          {
+            soldStatus:
+              SeatReservationStatus.SOLD,
+            reservedStatus:
+              SeatReservationStatus.RESERVED,
+            heldStatus:
+              SeatReservationStatus.HELD,
+            now,
+          },
+        )
+        .getMany();
 
     const occupiedSeatIds = new Set(
-      occupiedReservations.map((reservation) => reservation.vehicleSeat.id),
+      occupiedReservations.map(
+        (reservation) =>
+          reservation.vehicleSeat.id,
+      ),
     );
 
     const reservationBySeatId = new Map(
-      occupiedReservations.map((reservation) => [
-        reservation.vehicleSeat.id,
-        reservation,
-      ]),
+      occupiedReservations.map(
+        (reservation) => [
+          reservation.vehicleSeat.id,
+          reservation,
+        ],
+      ),
     );
 
     const availableSeatsCount = seats.filter(
-      (seat) => !occupiedSeatIds.has(seat.id),
+      (seat) =>
+        !occupiedSeatIds.has(seat.id),
     ).length;
 
-    trip.availableSeatsCount = availableSeatsCount;
+    trip.availableSeatsCount =
+      availableSeatsCount;
+
     await this.tripsRepository.save(trip);
 
     return seats.map((seat) => {
-      const reservation = reservationBySeatId.get(seat.id);
-      const isOccupied = occupiedSeatIds.has(seat.id);
+      const reservation =
+        reservationBySeatId.get(seat.id);
+
+      const isOccupied =
+        occupiedSeatIds.has(seat.id);
 
       return {
         id: seat.id,
@@ -527,42 +708,60 @@ export class TripsService {
         seatLabel: seat.seatLabel,
         seatType: seat.seatType,
         isAvailable: !isOccupied,
-        status: isOccupied ? 'occupied' : 'available',
-        reservationStatus: reservation?.reservationStatus ?? null,
-        expiresAt: reservation?.expiresAt ?? null,
+        status: isOccupied
+          ? 'occupied'
+          : 'available',
+        reservationStatus:
+          reservation?.reservationStatus ??
+          null,
+        expiresAt:
+          reservation?.expiresAt ?? null,
       };
     });
   }
 
-  async update(id: string, dto: UpdateTripDto): Promise<Trip> {
+  async update(
+    id: string,
+    dto: UpdateTripDto,
+  ): Promise<Trip> {
     const trip = await this.findOne(id);
 
     if (dto.routeId) {
-      const route = await this.routesRepository.findOne({
-        where: { id: dto.routeId },
-      });
+      const route =
+        await this.routesRepository.findOne({
+          where: { id: dto.routeId },
+        });
 
       if (!route) {
-        throw new NotFoundException('Rota não encontrada.');
+        throw new NotFoundException(
+          'Rota não encontrada.',
+        );
       }
 
       trip.route = route;
     }
 
     if (dto.vehicleId) {
-      const vehicle = await this.vehiclesRepository.findOne({
-        where: { id: dto.vehicleId },
-        relations: {
-          route: true,
-          driver: true,
-        },
-      });
+      const vehicle =
+        await this.vehiclesRepository.findOne({
+          where: { id: dto.vehicleId },
+          relations: {
+            route: true,
+            driver: true,
+          },
+        });
 
       if (!vehicle) {
-        throw new NotFoundException('Veículo não encontrado.');
+        throw new NotFoundException(
+          'Veículo não encontrado.',
+        );
       }
 
-      if (trip.route && vehicle.route && vehicle.route.id !== trip.route.id) {
+      if (
+        trip.route &&
+        vehicle.route &&
+        vehicle.route.id !== trip.route.id
+      ) {
         throw new BadRequestException(
           'Este veículo não pertence à rota da viagem.',
         );
@@ -571,17 +770,21 @@ export class TripsService {
       trip.vehicle = vehicle;
 
       if (!dto.driverId) {
-        trip.driver = vehicle.driver ?? null;
+        trip.driver =
+          vehicle.driver ?? null;
       }
     }
 
     if (dto.driverId) {
-      const driver = await this.usersRepository.findOne({
-        where: { id: dto.driverId },
-      });
+      const driver =
+        await this.usersRepository.findOne({
+          where: { id: dto.driverId },
+        });
 
       if (!driver) {
-        throw new NotFoundException('Motorista não encontrado.');
+        throw new NotFoundException(
+          'Motorista não encontrado.',
+        );
       }
 
       if (driver.role !== Role.DRIVER) {
@@ -594,23 +797,34 @@ export class TripsService {
     }
 
     if (dto.departureMode !== undefined) {
-      trip.departureMode = dto.departureMode;
+      trip.departureMode =
+        dto.departureMode;
     }
 
     if (dto.boardingDate !== undefined) {
-      trip.boardingDate = dto.boardingDate;
+      trip.boardingDate =
+        dto.boardingDate;
     }
 
-    if (dto.departureDatetime !== undefined) {
-      trip.departureDatetime = dto.departureDatetime
-        ? new Date(dto.departureDatetime)
-        : null;
+    if (
+      dto.departureDatetime !== undefined
+    ) {
+      trip.departureDatetime =
+        dto.departureDatetime
+          ? new Date(dto.departureDatetime)
+          : null;
     }
 
-    if (dto.estimatedArrivalDatetime !== undefined) {
-      trip.estimatedArrivalDatetime = dto.estimatedArrivalDatetime
-        ? new Date(dto.estimatedArrivalDatetime)
-        : null;
+    if (
+      dto.estimatedArrivalDatetime !==
+      undefined
+    ) {
+      trip.estimatedArrivalDatetime =
+        dto.estimatedArrivalDatetime
+          ? new Date(
+              dto.estimatedArrivalDatetime,
+            )
+          : null;
     }
 
     if (dto.baseFare !== undefined) {
@@ -636,14 +850,22 @@ export class TripsService {
     return this.tripsRepository.save(trip);
   }
 
-  async startBoarding(id: string, user?: any): Promise<Trip> {
+  async startBoarding(
+    id: string,
+    user?: any,
+  ): Promise<Trip> {
     const trip = await this.findOne(id);
 
-    await this.ensureDriverCanAccessTrip(trip, user);
+    await this.ensureDriverCanAccessTrip(
+      trip,
+      user,
+    );
 
     if (
-      trip.status !== TripStatus.SCHEDULED &&
-      trip.status !== TripStatus.BOARDING
+      trip.status !==
+        TripStatus.SCHEDULED &&
+      trip.status !==
+        TripStatus.BOARDING
     ) {
       throw new BadRequestException(
         'A viagem não pode entrar em embarque neste estado.',
@@ -655,14 +877,22 @@ export class TripsService {
     return this.tripsRepository.save(trip);
   }
 
-  async startTrip(id: string, user?: any): Promise<Trip> {
+  async startTrip(
+    id: string,
+    user?: any,
+  ): Promise<Trip> {
     const trip = await this.findOne(id);
 
-    await this.ensureDriverCanAccessTrip(trip, user);
+    await this.ensureDriverCanAccessTrip(
+      trip,
+      user,
+    );
 
     if (
-      trip.status !== TripStatus.SCHEDULED &&
-      trip.status !== TripStatus.BOARDING
+      trip.status !==
+        TripStatus.SCHEDULED &&
+      trip.status !==
+        TripStatus.BOARDING
     ) {
       throw new BadRequestException(
         'A viagem só pode ser iniciada se estiver agendada ou em embarque.',
@@ -674,12 +904,21 @@ export class TripsService {
     return this.tripsRepository.save(trip);
   }
 
-  async complete(id: string, user?: any): Promise<Trip> {
+  async complete(
+    id: string,
+    user?: any,
+  ): Promise<Trip> {
     const trip = await this.findOne(id);
 
-    await this.ensureDriverCanAccessTrip(trip, user);
+    await this.ensureDriverCanAccessTrip(
+      trip,
+      user,
+    );
 
-    if (trip.status !== TripStatus.IN_PROGRESS) {
+    if (
+      trip.status !==
+      TripStatus.IN_PROGRESS
+    ) {
       throw new BadRequestException(
         'A viagem só pode ser finalizada se estiver em andamento.',
       );

@@ -95,6 +95,40 @@ export class BookingsService {
     return user?.role === Role.PASSENGER || String(user?.role) === 'passenger';
   }
 
+  private generateBookingCode(): string {
+    return `BK-${Date.now().toString().slice(-6)}-${Math.random()
+      .toString(36)
+      .substring(2, 6)
+      .toUpperCase()}`;
+  }
+
+  private recalculateBookingTotal(booking: Booking): void {
+    booking.totalAmount =
+      Number(booking.subtotalAmount || 0) +
+      Number(booking.systemFeeAmount || 0) +
+      Number(booking.cargoAmount || 0) -
+      Number(booking.discountAmount || 0);
+  }
+
+  private sellerRouteMatchesTrip(sellerRoute: SellerRoute, trip: Trip): boolean {
+    const sameRoute = sellerRoute.route?.id === trip.route?.id;
+
+    if (!sameRoute) {
+      return false;
+    }
+
+    /**
+     * Importante:
+     * Se vehicleType estiver vazio em seller_routes, liberamos pela rota.
+     * Isso evita esconder viagens válidas por configuração incompleta.
+     */
+    if (!sellerRoute.vehicleType) {
+      return true;
+    }
+
+    return sellerRoute.vehicleType === trip.vehicle?.vehicleType;
+  }
+
   private async sellerHasAccessToBooking(
     booking: Booking,
     sellerId: string,
@@ -104,13 +138,12 @@ export class BookingsService {
     }
 
     const routeId = booking.trip?.route?.id;
-    const vehicleType = booking.trip?.vehicle?.vehicleType;
 
-    if (!routeId || !vehicleType) {
+    if (!routeId) {
       return false;
     }
 
-    const sellerRoute = await this.sellerRoutesRepository.findOne({
+    const sellerRoutes = await this.sellerRoutesRepository.find({
       where: {
         seller: {
           id: sellerId,
@@ -118,19 +151,56 @@ export class BookingsService {
         route: {
           id: routeId,
         },
-        vehicleType,
+      },
+      relations: {
+        route: true,
       },
     });
 
-    return !!sellerRoute;
+    return sellerRoutes.some((sellerRoute) =>
+      this.sellerRouteMatchesTrip(sellerRoute, booking.trip),
+    );
   }
 
-  private recalculateBookingTotal(booking: Booking): void {
-    booking.totalAmount =
-      Number(booking.subtotalAmount || 0) +
-      Number(booking.systemFeeAmount || 0) +
-      Number(booking.cargoAmount || 0) -
-      Number(booking.discountAmount || 0);
+  private async ensureSellerCanAccessTrip(
+    trip: Trip,
+    currentUser?: CurrentUser,
+  ): Promise<void> {
+    if (this.isAdmin(currentUser)) {
+      return;
+    }
+
+    if (!this.isSeller(currentUser)) {
+      throw new ForbiddenException('Acesso negado.');
+    }
+
+    const sellerId = this.getUserId(currentUser);
+
+    if (!sellerId) {
+      throw new ForbiddenException('Usuário vendedor inválido.');
+    }
+
+    const sellerRoutes = await this.sellerRoutesRepository.find({
+      where: {
+        seller: {
+          id: sellerId,
+        },
+        route: {
+          id: trip.route?.id,
+        },
+      },
+      relations: {
+        route: true,
+      },
+    });
+
+    const canAccess = sellerRoutes.some((sellerRoute) =>
+      this.sellerRouteMatchesTrip(sellerRoute, trip),
+    );
+
+    if (!canAccess) {
+      throw new ForbiddenException('Você não tem acesso a esta viagem.');
+    }
   }
 
   private async findAndValidateBoardingPoint(
@@ -162,6 +232,45 @@ export class BookingsService {
     }
 
     return point;
+  }
+
+  private mapTripForSellerBookings(trip: Trip) {
+    return {
+      id: trip.id,
+      status: trip.status,
+      departureMode: trip.departureMode,
+      boardingDate: trip.boardingDate,
+      departureDatetime: trip.departureDatetime,
+      baseFare: trip.baseFare,
+      availableSeatsCount: trip.availableSeatsCount,
+
+      route: trip.route
+        ? {
+            id: trip.route.id,
+            originName: trip.route.originName,
+            destinationName: trip.route.destinationName,
+          }
+        : null,
+
+      vehicle: trip.vehicle
+        ? {
+            id: trip.vehicle.id,
+            brand: trip.vehicle.brand,
+            model: trip.vehicle.model,
+            plateNumber: trip.vehicle.plateNumber,
+            vehicleType: trip.vehicle.vehicleType,
+            seatCount: trip.vehicle.seatCount,
+          }
+        : null,
+
+      driver: trip.driver
+        ? {
+            id: trip.driver.id,
+            fullName: trip.driver.fullName,
+            phoneNumber: trip.driver.phoneNumber,
+          }
+        : null,
+    };
   }
 
   async create(
@@ -361,6 +470,288 @@ export class BookingsService {
     return [];
   }
 
+  /**
+   * Endpoint leve:
+   * Lista apenas viagens/carros ativos para a tela de vendas/reservas.
+   */
+  async findSellerActiveTrips(currentUser?: CurrentUser): Promise<any[]> {
+    if (!this.isSeller(currentUser) && !this.isAdmin(currentUser)) {
+      throw new ForbiddenException('Acesso negado.');
+    }
+
+    const query = this.tripsRepository
+      .createQueryBuilder('trip')
+      .leftJoinAndSelect('trip.route', 'route')
+      .leftJoinAndSelect('trip.vehicle', 'vehicle')
+      .leftJoinAndSelect('trip.driver', 'driver')
+      .where('trip.status IN (:...statuses)', {
+        statuses: [TripStatus.SCHEDULED, TripStatus.BOARDING],
+      })
+      .orderBy('trip.boardingDate', 'ASC')
+      .addOrderBy('trip.departureDatetime', 'ASC')
+      .addOrderBy('trip.createdAt', 'DESC');
+
+    const trips = await query.getMany();
+
+    if (this.isAdmin(currentUser)) {
+      return trips.map((trip) => this.mapTripForSellerBookings(trip));
+    }
+
+    const sellerId = this.getUserId(currentUser);
+
+    if (!sellerId) {
+      return [];
+    }
+
+    const sellerRoutes = await this.sellerRoutesRepository.find({
+      where: {
+        seller: {
+          id: sellerId,
+        },
+      },
+      relations: {
+        route: true,
+      },
+    });
+
+    const allowedTrips = trips.filter((trip) =>
+      sellerRoutes.some((sellerRoute) =>
+        this.sellerRouteMatchesTrip(sellerRoute, trip),
+      ),
+    );
+
+    return allowedTrips.map((trip) => this.mapTripForSellerBookings(trip));
+  }
+
+  /**
+   * Endpoint leve:
+   * Lista reservas/vendas apenas da viagem selecionada.
+   */
+  async findBookingsByTripForSeller(
+    tripId: string,
+    currentUser?: CurrentUser,
+  ): Promise<any[]> {
+    const trip = await this.tripsRepository.findOne({
+      where: {
+        id: tripId,
+      },
+      relations: {
+        route: true,
+        vehicle: true,
+        driver: true,
+      },
+    });
+
+    if (!trip) {
+      throw new NotFoundException('Viagem não encontrada.');
+    }
+
+    await this.ensureSellerCanAccessTrip(trip, currentUser);
+
+    const bookings = await this.bookingsRepository.find({
+      where: {
+        trip: {
+          id: tripId,
+        },
+      },
+      relations: {
+        buyer: true,
+        seller: true,
+        boardingPoint: true,
+        dropoffPoint: true,
+        trip: {
+          route: true,
+          vehicle: true,
+          driver: true,
+        },
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+
+    const sellerId = this.getUserId(currentUser);
+
+    const filteredBookings = this.isSeller(currentUser)
+      ? bookings.filter((booking) => {
+          const soldByAnotherSeller =
+            booking.seller && booking.seller.id !== sellerId;
+
+          return !soldByAnotherSeller;
+        })
+      : bookings;
+
+    const bookingIds = filteredBookings.map((booking) => booking.id);
+
+    if (bookingIds.length === 0) {
+      return [];
+    }
+
+    const seatReservations = await this.seatReservationsRepository.find({
+      where: {
+        booking: {
+          id: In(bookingIds),
+        },
+        reservationStatus: In([
+          SeatReservationStatus.RESERVED,
+          SeatReservationStatus.SOLD,
+        ]),
+      },
+      relations: {
+        booking: true,
+        vehicleSeat: true,
+      },
+    });
+
+    const cargoRequests = await this.cargoRequestsRepository.find({
+      where: {
+        booking: {
+          id: In(bookingIds),
+        },
+      },
+      relations: {
+        booking: true,
+      },
+    });
+
+    const seatsByBooking = new Map<string, SeatReservation[]>();
+    const cargoByBooking = new Map<string, CargoRequest>();
+
+    for (const reservation of seatReservations) {
+      const bookingId = reservation.booking?.id;
+
+      if (!bookingId) {
+        continue;
+      }
+
+      const current = seatsByBooking.get(bookingId) || [];
+      current.push(reservation);
+      seatsByBooking.set(bookingId, current);
+    }
+
+    for (const cargo of cargoRequests) {
+      const bookingId = cargo.booking?.id;
+
+      if (!bookingId) {
+        continue;
+      }
+
+      cargoByBooking.set(bookingId, cargo);
+    }
+
+    return filteredBookings.map((booking) => {
+      const reservations = seatsByBooking.get(booking.id) || [];
+
+      const orderedReservations = reservations.sort((a, b) => {
+        const seatA = Number(a.vehicleSeat?.seatNumber || 0);
+        const seatB = Number(b.vehicleSeat?.seatNumber || 0);
+
+        return seatA - seatB;
+      });
+
+      const reservedSeatLabels = orderedReservations
+        .map(
+          (reservation) =>
+            reservation.vehicleSeat?.seatLabel ||
+            reservation.vehicleSeat?.seatNumber,
+        )
+        .filter(Boolean);
+
+      const cargo = cargoByBooking.get(booking.id) || null;
+
+      return {
+        id: booking.id,
+        bookingCode: booking.bookingCode,
+
+        passengerName: booking.passengerName,
+        passengerPhone: booking.passengerPhone,
+
+        bookingStatus: booking.bookingStatus,
+        paymentStatus: booking.paymentStatus,
+
+        seatQuantity: booking.seatQuantity,
+        reservedSeatLabels,
+
+        ticketAmount: booking.ticketAmount,
+        subtotalAmount: booking.subtotalAmount,
+        systemFeeAmount: booking.systemFeeAmount,
+        cargoAmount: booking.cargoAmount,
+        totalAmount: booking.totalAmount,
+
+        confirmedAt: booking.confirmedAt,
+        cancelledAt: booking.cancelledAt,
+        boardedAt: booking.boardedAt,
+        arrivedAt: booking.arrivedAt,
+        createdAt: booking.createdAt,
+
+        boardingPoint: booking.boardingPoint
+          ? {
+              id: booking.boardingPoint.id,
+              name: booking.boardingPoint.name,
+              orderNumber: booking.boardingPoint.orderNumber,
+            }
+          : null,
+
+        dropoffPoint: booking.dropoffPoint
+          ? {
+              id: booking.dropoffPoint.id,
+              name: booking.dropoffPoint.name,
+              orderNumber: booking.dropoffPoint.orderNumber,
+            }
+          : null,
+
+        trip: booking.trip
+          ? {
+              id: booking.trip.id,
+              status: booking.trip.status,
+              boardingDate: booking.trip.boardingDate,
+              departureDatetime: booking.trip.departureDatetime,
+              baseFare: booking.trip.baseFare,
+
+              route: booking.trip.route
+                ? {
+                    id: booking.trip.route.id,
+                    originName: booking.trip.route.originName,
+                    destinationName: booking.trip.route.destinationName,
+                  }
+                : null,
+
+              vehicle: booking.trip.vehicle
+                ? {
+                    id: booking.trip.vehicle.id,
+                    brand: booking.trip.vehicle.brand,
+                    model: booking.trip.vehicle.model,
+                    plateNumber: booking.trip.vehicle.plateNumber,
+                    vehicleType: booking.trip.vehicle.vehicleType,
+                    seatCount: booking.trip.vehicle.seatCount,
+                  }
+                : null,
+
+              driver: booking.trip.driver
+                ? {
+                    id: booking.trip.driver.id,
+                    fullName: booking.trip.driver.fullName,
+                    phoneNumber: booking.trip.driver.phoneNumber,
+                  }
+                : null,
+            }
+          : null,
+
+        cargoRequest: cargo
+          ? {
+              id: cargo.id,
+              cargoDescription: cargo.cargoDescription,
+              estimatedWeightKg: cargo.estimatedWeightKg,
+              photoUrl: cargo.photoUrl,
+              finalPrice: cargo.finalPrice,
+              cargoStatus: cargo.cargoStatus,
+              passengerAccepted: cargo.passengerAccepted,
+            }
+          : null,
+      };
+    });
+  }
+
   async findMyBookings(userId: string): Promise<Booking[]> {
     return this.bookingsRepository.find({
       where: {
@@ -388,7 +779,9 @@ export class BookingsService {
   async findMyBookingsSummary(userId: string): Promise<any[]> {
     const bookings = await this.bookingsRepository.find({
       where: {
-        buyer: { id: userId },
+        buyer: {
+          id: userId,
+        },
         passengerDeletedAt: IsNull(),
       },
       relations: {
@@ -413,7 +806,9 @@ export class BookingsService {
 
     const seatReservations = await this.seatReservationsRepository.find({
       where: {
-        booking: { id: In(bookingIds) },
+        booking: {
+          id: In(bookingIds),
+        },
         reservationStatus: In([
           SeatReservationStatus.RESERVED,
           SeatReservationStatus.SOLD,
@@ -427,7 +822,9 @@ export class BookingsService {
 
     const cargos = await this.cargoRequestsRepository.find({
       where: {
-        booking: { id: In(bookingIds) },
+        booking: {
+          id: In(bookingIds),
+        },
       },
       relations: {
         booking: true,
@@ -439,7 +836,10 @@ export class BookingsService {
 
     for (const reservation of seatReservations) {
       const bookingId = reservation.booking?.id;
-      if (!bookingId) continue;
+
+      if (!bookingId) {
+        continue;
+      }
 
       const current = seatsByBooking.get(bookingId) || [];
       current.push(reservation);
@@ -448,7 +848,10 @@ export class BookingsService {
 
     for (const cargo of cargos) {
       const bookingId = cargo.booking?.id;
-      if (!bookingId) continue;
+
+      if (!bookingId) {
+        continue;
+      }
 
       cargoByBooking.set(bookingId, cargo);
     }
@@ -459,6 +862,7 @@ export class BookingsService {
       const orderedReservations = reservations.sort((a, b) => {
         const seatA = Number(a.vehicleSeat?.seatNumber || 0);
         const seatB = Number(b.vehicleSeat?.seatNumber || 0);
+
         return seatA - seatB;
       });
 
@@ -476,10 +880,13 @@ export class BookingsService {
       return {
         id: booking.id,
         bookingCode: booking.bookingCode,
+
         passengerName: booking.passengerName,
         passengerPhone: booking.passengerPhone,
+
         bookingStatus: booking.bookingStatus,
         paymentStatus: booking.paymentStatus,
+
         seatQuantity: booking.seatQuantity,
         reservedSeatLabels,
 
@@ -576,8 +983,6 @@ export class BookingsService {
     });
   }
 
-  
-
   async deleteForPassenger(
     bookingId: string,
     currentUser?: CurrentUser,
@@ -621,12 +1026,8 @@ export class BookingsService {
 
     for (const bookingId of bookingIds) {
       const booking = await this.bookingsRepository.findOne({
-        where: {
-          id: bookingId,
-        },
-        relations: {
-          buyer: true,
-        },
+        where: { id: bookingId },
+        relations: { buyer: true },
       });
 
       if (!booking) {
@@ -665,14 +1066,10 @@ export class BookingsService {
 
     const bookings = await this.bookingsRepository.find({
       where: {
-        buyer: {
-          id: passengerId,
-        },
+        buyer: { id: passengerId },
         passengerDeletedAt: IsNull(),
       },
-      relations: {
-        buyer: true,
-      },
+      relations: { buyer: true },
     });
 
     for (const booking of bookings) {
@@ -718,9 +1115,7 @@ export class BookingsService {
 
     const bookings = await this.bookingsRepository.find({
       where: {
-        trip: {
-          id: tripId,
-        },
+        trip: { id: tripId },
       },
       relations: {
         buyer: true,
@@ -766,32 +1161,51 @@ export class BookingsService {
       }
     }
 
-    const result = [];
+    const bookingIds = allowedBookings.map((booking) => booking.id);
 
-    for (const booking of allowedBookings) {
-      const seatReservations = await this.seatReservationsRepository.find({
-        where: {
-          booking: {
-            id: booking.id,
-          },
-        },
-        relations: {
-          vehicleSeat: true,
-        },
-      });
+    if (bookingIds.length === 0) {
+      return [];
+    }
 
-      const orderedSeatReservations = seatReservations.sort((a, b) => {
+    const seatReservations = await this.seatReservationsRepository.find({
+      where: {
+        booking: { id: In(bookingIds) },
+      },
+      relations: {
+        booking: true,
+        vehicleSeat: true,
+      },
+    });
+
+    const seatsByBooking = new Map<string, SeatReservation[]>();
+
+    for (const reservation of seatReservations) {
+      const bookingId = reservation.booking?.id;
+
+      if (!bookingId) {
+        continue;
+      }
+
+      const current = seatsByBooking.get(bookingId) || [];
+      current.push(reservation);
+      seatsByBooking.set(bookingId, current);
+    }
+
+    const result = allowedBookings.map((booking) => {
+      const reservations = seatsByBooking.get(booking.id) || [];
+
+      const orderedSeatReservations = reservations.sort((a, b) => {
         const seatA = Number(a.vehicleSeat?.seatNumber || 0);
         const seatB = Number(b.vehicleSeat?.seatNumber || 0);
 
         return seatA - seatB;
       });
 
-      result.push({
+      return {
         ...booking,
         seatReservations: orderedSeatReservations,
-      });
-    }
+      };
+    });
 
     return result.sort((a, b) => {
       const boardingA = Number(a.boardingPointOrder || 999999);
@@ -814,7 +1228,9 @@ export class BookingsService {
 
   async findOne(id: string, currentUser?: CurrentUser): Promise<Booking> {
     const booking = await this.bookingsRepository.findOne({
-      where: { id },
+      where: {
+        id,
+      },
       relations: {
         trip: {
           route: true,
@@ -889,7 +1305,9 @@ export class BookingsService {
 
     const seatReservations = await this.seatReservationsRepository.find({
       where: {
-        booking: { id: booking.id },
+        booking: {
+          id: booking.id,
+        },
         reservationStatus: SeatReservationStatus.RESERVED,
       },
     });
@@ -1054,12 +1472,5 @@ export class BookingsService {
     this.recalculateBookingTotal(booking);
 
     return this.bookingsRepository.save(booking);
-  }
-
-  private generateBookingCode(): string {
-    return `BK-${Date.now().toString().slice(-6)}-${Math.random()
-      .toString(36)
-      .substring(2, 6)
-      .toUpperCase()}`;
   }
 }

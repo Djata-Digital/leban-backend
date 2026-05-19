@@ -12,6 +12,7 @@ import {
 import { TripsService } from './trips.service';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { UpdateTripDto } from './dto/update-trip.dto';
+
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 
@@ -27,12 +28,26 @@ export class TripsController {
    */
   @Roles(Role.ADMIN, Role.SELLER)
   @Post()
-  create(@Body() dto: CreateTripDto, @Request() req: { user: any }) {
+  create(
+    @Body() dto: CreateTripDto,
+    @Request() req: { user: any },
+  ) {
     return this.tripsService.create(dto, req.user);
   }
 
   /**
+   * NOVO ENDPOINT LEVE
+   * Muito mais rápido para dashboard/listagem.
+   */
+  @Roles(Role.ADMIN, Role.SELLER)
+  @Get('seller-light')
+  findAllLight(@Request() req: { user: any }) {
+    return this.tripsService.findAllLight(req.user);
+  }
+
+  /**
    * Lista viagens para admin/seller.
+   * (COMPLETO)
    */
   @Roles(Role.ADMIN, Role.SELLER)
   @Get()
@@ -42,13 +57,6 @@ export class TripsController {
 
   /**
    * Pesquisa viagens disponíveis para passageiro.
-   *
-   * Agora aceita:
-   * - origin
-   * - destination
-   * - vehicleType
-   * - routeId
-   * - date
    */
   @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
   @Get('search')
@@ -69,10 +77,7 @@ export class TripsController {
   }
 
   /**
-   * Lista viagens disponíveis para passageiro comprar.
-   *
-   * Mantido por compatibilidade.
-   * Depois o app passageiro deve preferir /trips/search.
+   * Lista viagens disponíveis.
    */
   @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER)
   @Get('available')
@@ -81,43 +86,62 @@ export class TripsController {
   }
 
   /**
-   * Lista viagens atribuídas ao motorista logado.
+   * Lista viagens do motorista.
    */
   @Roles(Role.DRIVER)
   @Get('my-driver-trips')
-  findMyDriverTrips(@Request() req: { user: any }) {
-    return this.tripsService.findMyDriverTrips(req.user.sub);
+  findMyDriverTrips(
+    @Request() req: { user: any },
+  ) {
+    return this.tripsService.findMyDriverTrips(
+      req.user.sub,
+    );
   }
 
   /**
-   * Lista os assentos do veículo usado em uma viagem.
+   * Lista assentos da viagem.
    */
-  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER, Role.DRIVER)
+  @Roles(
+    Role.ADMIN,
+    Role.SELLER,
+    Role.PASSENGER,
+    Role.DRIVER,
+  )
   @Get(':id/seats')
-  findSeatsByTrip(@Param('id') id: string) {
+  findSeatsByTrip(
+    @Param('id') id: string,
+  ) {
     return this.tripsService.findSeatsByTrip(id);
   }
 
   /**
-   * Busca uma viagem pelo ID.
+   * Busca viagem por ID.
    */
-  @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER, Role.DRIVER)
+  @Roles(
+    Role.ADMIN,
+    Role.SELLER,
+    Role.PASSENGER,
+    Role.DRIVER,
+  )
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.tripsService.findOne(id);
   }
 
   /**
-   * Atualiza uma viagem.
+   * Atualiza viagem.
    */
   @Roles(Role.ADMIN, Role.SELLER)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateTripDto) {
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTripDto,
+  ) {
     return this.tripsService.update(id, dto);
   }
 
   /**
-   * Cancela uma viagem.
+   * Cancela viagem.
    */
   @Roles(Role.ADMIN, Role.SELLER)
   @Patch(':id/cancel')
@@ -126,29 +150,59 @@ export class TripsController {
   }
 
   /**
-   * Coloca a viagem em embarque.
+   * Inicia embarque.
    */
-  @Roles(Role.ADMIN, Role.SELLER, Role.DRIVER)
+  @Roles(
+    Role.ADMIN,
+    Role.SELLER,
+    Role.DRIVER,
+  )
   @Patch(':id/start-boarding')
-  startBoarding(@Param('id') id: string, @Request() req: { user: any }) {
-    return this.tripsService.startBoarding(id, req.user);
+  startBoarding(
+    @Param('id') id: string,
+    @Request() req: { user: any },
+  ) {
+    return this.tripsService.startBoarding(
+      id,
+      req.user,
+    );
   }
 
   /**
-   * Inicia a viagem.
+   * Inicia viagem.
    */
-  @Roles(Role.ADMIN, Role.SELLER, Role.DRIVER)
+  @Roles(
+    Role.ADMIN,
+    Role.SELLER,
+    Role.DRIVER,
+  )
   @Patch(':id/start')
-  startTrip(@Param('id') id: string, @Request() req: { user: any }) {
-    return this.tripsService.startTrip(id, req.user);
+  startTrip(
+    @Param('id') id: string,
+    @Request() req: { user: any },
+  ) {
+    return this.tripsService.startTrip(
+      id,
+      req.user,
+    );
   }
 
   /**
-   * Finaliza a viagem.
+   * Finaliza viagem.
    */
-  @Roles(Role.ADMIN, Role.SELLER, Role.DRIVER)
+  @Roles(
+    Role.ADMIN,
+    Role.SELLER,
+    Role.DRIVER,
+  )
   @Patch(':id/complete')
-  complete(@Param('id') id: string, @Request() req: { user: any }) {
-    return this.tripsService.complete(id, req.user);
+  complete(
+    @Param('id') id: string,
+    @Request() req: { user: any },
+  ) {
+    return this.tripsService.complete(
+      id,
+      req.user,
+    );
   }
 }

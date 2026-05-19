@@ -26,6 +26,30 @@ export class BookingsController {
   }
 
   @Roles(Role.ADMIN, Role.SELLER)
+  @Get('seller-active-trips')
+  findSellerActiveTrips(@Request() req: { user: any }) {
+    return this.bookingsService.findSellerActiveTrips(req.user);
+  }
+
+  @Roles(Role.ADMIN, Role.SELLER, Role.DRIVER)
+  @Get('trip/:tripId/passengers')
+  findPassengersByTrip(
+    @Param('tripId') tripId: string,
+    @Request() req: { user: any },
+  ) {
+    return this.bookingsService.findPassengersByTrip(tripId, req.user);
+  }
+
+  @Roles(Role.ADMIN, Role.SELLER)
+  @Get('trip/:tripId')
+  findBookingsByTripForSeller(
+    @Param('tripId') tripId: string,
+    @Request() req: { user: any },
+  ) {
+    return this.bookingsService.findBookingsByTripForSeller(tripId, req.user);
+  }
+
+  @Roles(Role.ADMIN, Role.SELLER)
   @Get()
   findAll(@Request() req: { user: any }) {
     return this.bookingsService.findAll(req.user);
@@ -51,10 +75,7 @@ export class BookingsController {
     @Body() dto: { bookingIds: string[] },
     @Request() req: { user: any },
   ) {
-    return this.bookingsService.deleteSelectedForPassenger(
-      dto.bookingIds,
-      req.user,
-    );
+    return this.bookingsService.deleteSelectedForPassenger(dto.bookingIds, req.user);
   }
 
   @Roles(Role.PASSENGER)
@@ -67,15 +88,6 @@ export class BookingsController {
   @Patch(':id/delete-for-passenger')
   deleteForPassenger(@Param('id') id: string, @Request() req: { user: any }) {
     return this.bookingsService.deleteForPassenger(id, req.user);
-  }
-
-  @Roles(Role.ADMIN, Role.SELLER, Role.DRIVER)
-  @Get('trip/:tripId/passengers')
-  findPassengersByTrip(
-    @Param('tripId') tripId: string,
-    @Request() req: { user: any },
-  ) {
-    return this.bookingsService.findPassengersByTrip(tripId, req.user);
   }
 
   @Roles(Role.ADMIN, Role.SELLER, Role.PASSENGER, Role.DRIVER)
