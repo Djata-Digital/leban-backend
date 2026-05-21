@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -13,6 +14,8 @@ import {
 
 import { User } from '../users/entities/user.entity';
 
+import { SellerRoute } from '../seller-routes/entities/seller-route.entity';
+
 import {
   CargoRequest,
   CargoRequestStatus,
@@ -21,9 +24,12 @@ import {
 import { CreateCargoRequestDto } from './dto/create-cargo-request.dto';
 import { ReviewCargoRequestDto } from './dto/review-cargo-request.dto';
 
-/**
- * Serviço responsável pela lógica de carga/bagagem.
- */
+import { NotificationsService } from '../notifications/notifications.service';
+import {
+  NotificationChannel,
+  NotificationType,
+} from '../notifications/entities/notification.entity';
+
 @Injectable()
 export class CargoRequestsService {
   constructor(
@@ -35,35 +41,27 @@ export class CargoRequestsService {
 
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+
+    @InjectRepository(SellerRoute)
+    private readonly sellerRoutesRepository: Repository<SellerRoute>,
+
+    private readonly notificationsService: NotificationsService,
   ) {}
 
-  /**
-   * Converte valores vindos do multipart/form-data para número.
-   * Se vier vazio, null ou inválido, retorna null.
-   */
   private parseOptionalNumber(value: unknown): number | null {
-    if (value === undefined || value === null) {
-      return null;
-    }
+    if (value === undefined || value === null) return null;
 
     const text = String(value).trim();
 
-    if (!text) {
-      return null;
-    }
+    if (!text) return null;
 
     const numberValue = Number(text.replace(',', '.'));
 
-    if (Number.isNaN(numberValue)) {
-      return null;
-    }
+    if (Number.isNaN(numberValue)) return null;
 
     return numberValue;
   }
 
-  /**
-   * Recalcula o total da reserva.
-   */
   private async recalculateBookingTotal(booking: Booking): Promise<void> {
     booking.totalAmount =
       Number(booking.subtotalAmount || 0) +
@@ -76,12 +74,96 @@ export class CargoRequestsService {
     await this.bookingsRepository.save(booking);
   }
 
-  /**
-   * Cria um pedido de carga ligado a uma reserva.
-   */
+  private async notifySellersAboutPendingCargo(
+    booking: Booking,
+    cargo: CargoRequest,
+  ): Promise<void> {
+    const routeId = booking.trip?.route?.id;
+    const vehicleType = booking.trip?.vehicle?.vehicleType;
+
+    if (!routeId || !vehicleType) return;
+
+    const sellerRoutes = await this.sellerRoutesRepository.find({
+      where: {
+        route: { id: routeId },
+        vehicleType,
+      },
+      relations: {
+        seller: true,
+        route: true,
+      },
+    });
+
+    const notifiedSellerIds = new Set<string>();
+
+    for (const sellerRoute of sellerRoutes) {
+      const sellerId = sellerRoute.seller?.id;
+
+      if (!sellerId || notifiedSellerIds.has(sellerId)) continue;
+
+      notifiedSellerIds.add(sellerId);
+
+      await this.notificationsService.create({
+        userId: sellerId,
+        title: 'Nova carga pendente',
+        message: `Existe uma nova carga para analisar na reserva ${
+          booking.bookingCode || booking.id
+        }.`,
+        notificationType: NotificationType.SYSTEM,
+        deliveryChannel: NotificationChannel.IN_APP,
+      });
+    }
+  }
+
+  private async notifyPassengerCargoReviewed(
+    booking: Booking,
+    cargoStatus: CargoRequestStatus,
+    finalPrice?: number | null,
+  ): Promise<void> {
+    const passengerId = booking.buyer?.id;
+
+    if (!passengerId) return;
+
+    if (cargoStatus === CargoRequestStatus.APPROVED) {
+      await this.notificationsService.create({
+        userId: passengerId,
+        title: 'Carga aprovada',
+        message: `Sua carga foi aprovada. Preço final: ${Number(
+          finalPrice || 0,
+        ).toLocaleString()} XOF.`,
+        notificationType: NotificationType.SYSTEM,
+        deliveryChannel: NotificationChannel.IN_APP,
+      });
+
+      return;
+    }
+
+    if (cargoStatus === CargoRequestStatus.REJECTED) {
+      await this.notificationsService.create({
+        userId: passengerId,
+        title: 'Carga rejeitada',
+        message:
+          'Sua carga foi rejeitada pela operação. A reserva seguirá sem valor de carga.',
+        notificationType: NotificationType.SYSTEM,
+        deliveryChannel: NotificationChannel.IN_APP,
+      });
+    }
+  }
+
   async create(dto: CreateCargoRequestDto): Promise<CargoRequest> {
     const booking = await this.bookingsRepository.findOne({
       where: { id: dto.bookingId },
+      relations: {
+        buyer: true,
+        seller: true,
+        trip: {
+          route: true,
+          vehicle: true,
+          driver: true,
+        },
+        boardingPoint: true,
+        dropoffPoint: true,
+      },
     });
 
     if (!booking) {
@@ -132,21 +214,16 @@ export class CargoRequestsService {
 
     const savedCargo = await this.cargoRepository.save(cargo);
 
-    /**
-     * Se já veio preço da carga, atualiza os valores da reserva.
-     * Isso acontece no fluxo do vendedor.
-     */
     if (hasFinalPrice) {
       booking.cargoAmount = finalPrice;
       await this.recalculateBookingTotal(booking);
+    } else {
+      await this.notifySellersAboutPendingCargo(booking, savedCargo);
     }
 
     return savedCargo;
   }
 
-  /**
-   * Lista todos os pedidos de carga.
-   */
   async findAll(): Promise<CargoRequest[]> {
     return this.cargoRepository.find({
       order: {
@@ -155,13 +232,23 @@ export class CargoRequestsService {
     });
   }
 
-  /**
-   * Lista pedidos pendentes de revisão.
-   */
   async findPending(): Promise<CargoRequest[]> {
     return this.cargoRepository.find({
       where: {
         cargoStatus: CargoRequestStatus.PENDING_REVIEW,
+      },
+      relations: {
+        booking: {
+          buyer: true,
+          seller: true,
+          trip: {
+            route: true,
+            vehicle: true,
+            driver: true,
+          },
+          boardingPoint: true,
+          dropoffPoint: true,
+        },
       },
       order: {
         createdAt: 'ASC',
@@ -169,12 +256,23 @@ export class CargoRequestsService {
     });
   }
 
-  /**
-   * Busca pedido de carga por ID.
-   */
   async findOne(id: string): Promise<CargoRequest> {
     const cargo = await this.cargoRepository.findOne({
       where: { id },
+      relations: {
+        booking: {
+          buyer: true,
+          seller: true,
+          trip: {
+            route: true,
+            vehicle: true,
+            driver: true,
+          },
+          boardingPoint: true,
+          dropoffPoint: true,
+        },
+        reviewedBy: true,
+      },
     });
 
     if (!cargo) {
@@ -184,20 +282,25 @@ export class CargoRequestsService {
     return cargo;
   }
 
-  /**
-   * Busca carga por reserva.
-   */
   async findByBooking(bookingId: string): Promise<CargoRequest | null> {
     return this.cargoRepository.findOne({
       where: {
         booking: { id: bookingId },
       },
+      relations: {
+        booking: {
+          buyer: true,
+          seller: true,
+          trip: {
+            route: true,
+            vehicle: true,
+            driver: true,
+          },
+        },
+      },
     });
   }
 
-  /**
-   * Aprova ou rejeita o pedido de carga pela operação/vendedor.
-   */
   async review(id: string, dto: ReviewCargoRequestDto): Promise<CargoRequest> {
     const cargo = await this.findOne(id);
 
@@ -234,13 +337,11 @@ export class CargoRequestsService {
     cargo.reviewedAt = new Date();
     cargo.reviewNote = dto.reviewNote ?? null;
 
-    /**
-     * Quando o vendedor aprova, o passageiro ainda precisa aceitar.
-     * Por isso passengerAccepted continua null.
-     */
     cargo.passengerAccepted = null;
     cargo.passengerAcceptedAt = null;
     cargo.passengerRejectedAt = null;
+
+    const booking = cargo.booking;
 
     if (dto.cargoStatus === CargoRequestStatus.APPROVED) {
       if (finalPrice === null || finalPrice < 0) {
@@ -249,30 +350,30 @@ export class CargoRequestsService {
         );
       }
 
-      const booking = cargo.booking;
-
       booking.cargoAmount = finalPrice;
 
       await this.recalculateBookingTotal(booking);
+      await this.notifyPassengerCargoReviewed(
+        booking,
+        CargoRequestStatus.APPROVED,
+        finalPrice,
+      );
     }
 
-    /**
-     * Se vendedor rejeitar, remove valor da carga da reserva.
-     */
     if (dto.cargoStatus === CargoRequestStatus.REJECTED) {
-      const booking = cargo.booking;
-
       booking.cargoAmount = 0;
 
       await this.recalculateBookingTotal(booking);
+      await this.notifyPassengerCargoReviewed(
+        booking,
+        CargoRequestStatus.REJECTED,
+        null,
+      );
     }
 
     return this.cargoRepository.save(cargo);
   }
 
-  /**
-   * Passageiro aceita o preço da carga aprovado pelo vendedor/operação.
-   */
   async passengerAccept(id: string): Promise<CargoRequest> {
     const cargo = await this.findOne(id);
 
@@ -301,12 +402,6 @@ export class CargoRequestsService {
     return this.cargoRepository.save(cargo);
   }
 
-  /**
-   * Passageiro recusa o preço da carga.
-   *
-   * A carga passa para CANCELLED, o valor da carga é removido
-   * da reserva, e o passageiro pode seguir apenas com a passagem.
-   */
   async passengerReject(id: string): Promise<CargoRequest> {
     const cargo = await this.findOne(id);
 
@@ -333,9 +428,6 @@ export class CargoRequestsService {
     return this.cargoRepository.save(cargo);
   }
 
-  /**
-   * Cancela um pedido de carga ainda pendente.
-   */
   async cancel(id: string): Promise<CargoRequest> {
     const cargo = await this.findOne(id);
 
