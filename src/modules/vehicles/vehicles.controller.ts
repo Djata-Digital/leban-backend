@@ -27,6 +27,12 @@ import { Role } from '../../common/enums/role.enum';
 type VehicleBody = Partial<Vehicle> & {
   routeId?: string;
   driverId?: string;
+
+  /**
+   * Usado pelo app mobile para enviar imagem sem multipart/form-data.
+   */
+  vehicleImageBase64?: string;
+  vehicleImageMimeType?: string;
 };
 
 @Roles(Role.ADMIN, Role.SELLER)
@@ -40,13 +46,15 @@ export class VehiclesController {
     });
   }
 
+  /**
+   * Upload tradicional via multipart/form-data.
+   * Continua funcionando para web/navegador.
+   */
   private async uploadVehicleImageToCloudinary(
     file: Express.Multer.File,
   ): Promise<string> {
     if (!file?.buffer) {
-      throw new InternalServerErrorException(
-        'Arquivo de imagem inválido.',
-      );
+      throw new InternalServerErrorException('Arquivo de imagem inválido.');
     }
 
     return new Promise((resolve, reject) => {
@@ -73,6 +81,64 @@ export class VehiclesController {
     });
   }
 
+  /**
+   * Upload via base64.
+   * Usado pelo APK Android para evitar erro de multipart/form-data.
+   */
+  private async uploadVehicleImageBase64ToCloudinary(
+    base64: string,
+    mimeType = 'image/jpeg',
+  ): Promise<string> {
+    try {
+      if (!base64) {
+        throw new InternalServerErrorException('Imagem base64 inválida.');
+      }
+
+      const dataUri = `data:${mimeType};base64,${base64}`;
+
+      const result = await cloudinary.uploader.upload(dataUri, {
+        folder: 'passagens/vehicles',
+        resource_type: 'image',
+      });
+
+      if (!result?.secure_url) {
+        throw new InternalServerErrorException(
+          'Cloudinary não retornou URL da imagem.',
+        );
+      }
+
+      return result.secure_url;
+    } catch (error) {
+      console.log('ERRO UPLOAD BASE64 CLOUDINARY:', error);
+
+      throw new InternalServerErrorException(
+        'Erro ao enviar imagem base64 para Cloudinary.',
+      );
+    }
+  }
+
+  /**
+   * Trata imagem recebida tanto por multipart quanto por base64.
+   */
+  private async prepareVehicleImage(
+    body: VehicleBody,
+    file?: Express.Multer.File,
+  ): Promise<void> {
+    if (file) {
+      body.vehicleImageUrl = await this.uploadVehicleImageToCloudinary(file);
+    }
+
+    if (body.vehicleImageBase64) {
+      body.vehicleImageUrl = await this.uploadVehicleImageBase64ToCloudinary(
+        body.vehicleImageBase64,
+        body.vehicleImageMimeType || 'image/jpeg',
+      );
+    }
+
+    delete body.vehicleImageBase64;
+    delete body.vehicleImageMimeType;
+  }
+
   @Post()
   @UseInterceptors(
     FileInterceptor('image', {
@@ -87,10 +153,7 @@ export class VehiclesController {
     @Body() body: VehicleBody,
     @Request() req: { user: any },
   ) {
-    if (file) {
-      body.vehicleImageUrl =
-        await this.uploadVehicleImageToCloudinary(file);
-    }
+    await this.prepareVehicleImage(body, file);
 
     return this.vehiclesService.create(body, req.user);
   }
@@ -120,10 +183,7 @@ export class VehiclesController {
     @Body() body: VehicleBody,
     @Request() req: { user: any },
   ) {
-    if (file) {
-      body.vehicleImageUrl =
-        await this.uploadVehicleImageToCloudinary(file);
-    }
+    await this.prepareVehicleImage(body, file);
 
     return this.vehiclesService.update(id, body, req.user);
   }
