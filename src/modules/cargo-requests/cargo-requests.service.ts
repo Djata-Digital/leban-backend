@@ -78,31 +78,42 @@ export class CargoRequestsService {
     booking: Booking,
     cargo: CargoRequest,
   ): Promise<void> {
+    const notifiedSellerIds = new Set<string>();
+
+    async function addSellerId(sellerId?: string | null) {
+      if (!sellerId) return;
+      notifiedSellerIds.add(sellerId);
+    }
+
+    // 1. Notifica o vendedor ligado diretamente à reserva, se existir
+    await addSellerId(booking.seller?.id);
+
+    // 2. Notifica todos os vendedores autorizados para a rota/tipo do veículo
     const routeId = booking.trip?.route?.id;
     const vehicleType = booking.trip?.vehicle?.vehicleType;
 
-    if (!routeId || !vehicleType) return;
+    if (routeId && vehicleType) {
+      const sellerRoutes = await this.sellerRoutesRepository.find({
+        where: {
+          route: { id: routeId },
+          vehicleType,
+        },
+        relations: {
+          seller: true,
+          route: true,
+        },
+      });
 
-    const sellerRoutes = await this.sellerRoutesRepository.find({
-      where: {
-        route: { id: routeId },
-        vehicleType,
-      },
-      relations: {
-        seller: true,
-        route: true,
-      },
-    });
+      for (const sellerRoute of sellerRoutes) {
+        await addSellerId(sellerRoute.seller?.id);
+      }
+    }
 
-    const notifiedSellerIds = new Set<string>();
+    console.log('VENDEDORES QUE RECEBERÃO NOTIFICAÇÃO DE CARGA:', [
+      ...notifiedSellerIds,
+    ]);
 
-    for (const sellerRoute of sellerRoutes) {
-      const sellerId = sellerRoute.seller?.id;
-
-      if (!sellerId || notifiedSellerIds.has(sellerId)) continue;
-
-      notifiedSellerIds.add(sellerId);
-
+    for (const sellerId of notifiedSellerIds) {
       await this.notificationsService.create({
         userId: sellerId,
         title: 'Nova carga pendente',
