@@ -489,9 +489,35 @@ export class TripsService {
         `(
           trip.boarding_date BETWEEN :startDate AND :endDate
           OR DATE(trip.departure_datetime) BETWEEN :startDate AND :endDate
+          OR DATE(trip.updated_at) BETWEEN :startDate AND :endDate
+          OR DATE(trip.created_at) BETWEEN :startDate AND :endDate
         )`,
         {
           startDate: filters.startDate,
+          endDate: filters.endDate,
+        },
+      );
+    } else if (filters?.startDate) {
+      query.andWhere(
+        `(
+          trip.boarding_date >= :startDate
+          OR DATE(trip.departure_datetime) >= :startDate
+          OR DATE(trip.updated_at) >= :startDate
+          OR DATE(trip.created_at) >= :startDate
+        )`,
+        {
+          startDate: filters.startDate,
+        },
+      );
+    } else if (filters?.endDate) {
+      query.andWhere(
+        `(
+          trip.boarding_date <= :endDate
+          OR DATE(trip.departure_datetime) <= :endDate
+          OR DATE(trip.updated_at) <= :endDate
+          OR DATE(trip.created_at) <= :endDate
+        )`,
+        {
           endDate: filters.endDate,
         },
       );
