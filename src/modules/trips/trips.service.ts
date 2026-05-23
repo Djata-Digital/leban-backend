@@ -16,6 +16,8 @@ import { Vehicle } from '../vehicles/entities/vehicle.entity';
 import { User } from '../users/entities/user.entity';
 import { VehicleSeat } from '../vehicle-seats/entities/vehicle-seat.entity';
 import { SellerRoute } from '../seller-routes/entities/seller-route.entity';
+import { Booking } from '../bookings/entities/booking.entity';
+import { CargoRequest } from '../cargo-requests/entities/cargo-request.entity';
 
 import {
   SeatReservation,
@@ -30,6 +32,12 @@ type SearchTripsFilters = {
   vehicleType?: string;
   routeId?: string;
   date?: string;
+};
+
+type DriverTripsFilters = {
+  status?: string;
+  startDate?: string;
+  endDate?: string;
 };
 
 @Injectable()
@@ -55,6 +63,12 @@ export class TripsService {
 
     @InjectRepository(SeatReservation)
     private readonly seatReservationsRepository: Repository<SeatReservation>,
+
+    @InjectRepository(Booking)
+    private readonly bookingsRepository: Repository<Booking>,
+
+    @InjectRepository(CargoRequest)
+    private readonly cargoRequestsRepository: Repository<CargoRequest>,
   ) {}
 
   private getTodayDateOnly(): Date {
@@ -442,29 +456,203 @@ export class TripsService {
       };
     });
   }
-    async findMyDriverTrips(driverId: string): Promise<Trip[]> {
-    return this.tripsRepository.find({
+
+  async findMyDriverTrips(
+    driverId: string,
+    filters?: DriverTripsFilters,
+  ): Promise<Trip[]> {
+    const defaultStatuses = [
+      TripStatus.SCHEDULED,
+      TripStatus.BOARDING,
+      TripStatus.IN_PROGRESS,
+    ];
+
+    const selectedStatuses = filters?.status
+      ? filters.status
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : defaultStatuses;
+
+    const query = this.tripsRepository
+      .createQueryBuilder('trip')
+      .leftJoinAndSelect('trip.route', 'route')
+      .leftJoinAndSelect('trip.vehicle', 'vehicle')
+      .leftJoinAndSelect('trip.driver', 'driver')
+      .where('driver.id = :driverId', { driverId })
+      .andWhere('trip.status IN (:...statuses)', {
+        statuses: selectedStatuses,
+      });
+
+    if (filters?.startDate && filters?.endDate) {
+      query.andWhere(
+        `(
+          trip.boarding_date BETWEEN :startDate AND :endDate
+          OR DATE(trip.departure_datetime) BETWEEN :startDate AND :endDate
+        )`,
+        {
+          startDate: filters.startDate,
+          endDate: filters.endDate,
+        },
+      );
+    } else if (filters?.startDate) {
+      query.andWhere(
+        `(
+          trip.boarding_date >= :startDate
+          OR DATE(trip.departure_datetime) >= :startDate
+        )`,
+        {
+          startDate: filters.startDate,
+        },
+      );
+    } else if (filters?.endDate) {
+      query.andWhere(
+        `(
+          trip.boarding_date <= :endDate
+          OR DATE(trip.departure_datetime) <= :endDate
+        )`,
+        {
+          endDate: filters.endDate,
+        },
+      );
+    }
+
+    query
+      .orderBy('trip.boarding_date', 'DESC')
+      .addOrderBy('trip.departure_datetime', 'DESC')
+      .addOrderBy('trip.created_at', 'DESC');
+
+    return query.getMany();
+  }
+
+  async findDriverTripDetails(tripId: string, driverId: string) {
+    const trip = await this.tripsRepository.findOne({
       where: {
+        id: tripId,
         driver: { id: driverId },
-        status: In([
-          TripStatus.SCHEDULED,
-          TripStatus.BOARDING,
-          TripStatus.IN_PROGRESS,
-          TripStatus.COMPLETED,
-          TripStatus.CANCELLED,
-        ]),
       },
       relations: {
         route: true,
         vehicle: true,
         driver: true,
       },
+    });
+
+    if (!trip) {
+      throw new NotFoundException('Viagem não encontrada para este motorista.');
+    }
+
+    const passengers = await this.bookingsRepository.find({
+      where: {
+        trip: { id: tripId },
+      },
+      relations: {
+        buyer: true,
+        seller: true,
+        boardingPoint: true,
+        dropoffPoint: true,
+      },
       order: {
-        boardingDate: 'DESC',
-        departureDatetime: 'DESC',
-        createdAt: 'DESC',
+        boardingPointOrder: 'ASC',
+        dropoffPointOrder: 'ASC',
+        createdAt: 'ASC',
       },
     });
+
+    const bookingIds = passengers.map((booking) => booking.id);
+
+    const [seats, seatReservations, cargoRequests] = await Promise.all([
+      this.findSeatsByTrip(tripId),
+
+      bookingIds.length > 0
+        ? this.seatReservationsRepository.find({
+            where: {
+              booking: {
+                id: In(bookingIds),
+              },
+            },
+            relations: {
+              booking: true,
+              vehicleSeat: true,
+            },
+          })
+        : Promise.resolve([]),
+
+      bookingIds.length > 0
+        ? this.cargoRequestsRepository.find({
+            where: {
+              booking: {
+                id: In(bookingIds),
+              },
+            },
+            relations: {
+              booking: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const seatsByBooking = new Map<string, SeatReservation[]>();
+    const cargoByBooking: Record<string, any> = {};
+
+    for (const reservation of seatReservations) {
+      const bookingId = reservation.booking?.id;
+
+      if (!bookingId) continue;
+
+      const current = seatsByBooking.get(bookingId) || [];
+      current.push(reservation);
+      seatsByBooking.set(bookingId, current);
+    }
+
+    for (const cargo of cargoRequests) {
+      const bookingId = cargo.booking?.id;
+
+      if (!bookingId) continue;
+
+      cargoByBooking[bookingId] = {
+        id: cargo.id,
+        cargoDescription: cargo.cargoDescription,
+        estimatedWeightKg: cargo.estimatedWeightKg,
+        photoUrl: cargo.photoUrl,
+        finalPrice: cargo.finalPrice,
+        cargoStatus: cargo.cargoStatus,
+        passengerAccepted: cargo.passengerAccepted,
+      };
+    }
+
+    const passengersWithSeats = passengers.map((booking) => {
+      const reservations = seatsByBooking.get(booking.id) || [];
+
+      const orderedReservations = reservations.sort((a, b) => {
+        const seatA = Number(a.vehicleSeat?.seatNumber || 0);
+        const seatB = Number(b.vehicleSeat?.seatNumber || 0);
+
+        return seatA - seatB;
+      });
+
+      return {
+        ...booking,
+        seatReservations: orderedReservations.map((reservation) => ({
+          id: reservation.id,
+          reservationStatus: reservation.reservationStatus,
+          vehicleSeat: reservation.vehicleSeat
+            ? {
+                id: reservation.vehicleSeat.id,
+                seatNumber: reservation.vehicleSeat.seatNumber,
+                seatLabel: reservation.vehicleSeat.seatLabel,
+              }
+            : null,
+        })),
+      };
+    });
+
+    return {
+      trip,
+      passengers: passengersWithSeats,
+      seats,
+      cargoByBooking,
+    };
   }
 
   async findAvailable(): Promise<Trip[]> {

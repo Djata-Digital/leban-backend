@@ -88,14 +88,18 @@ export class TripsController {
   /**
    * Lista viagens do motorista.
    */
-  @Roles(Role.DRIVER)
   @Get('my-driver-trips')
   findMyDriverTrips(
     @Request() req: { user: any },
+    @Query('status') status?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
   ) {
-    return this.tripsService.findMyDriverTrips(
-      req.user.sub,
-    );
+    return this.tripsService.findMyDriverTrips(req.user.sub, {
+      status,
+      startDate,
+      endDate,
+    });
   }
 
   /**
@@ -123,6 +127,14 @@ export class TripsController {
     Role.PASSENGER,
     Role.DRIVER,
   )
+  @Roles(Role.DRIVER)
+  @Get(':id/driver-details')
+  findDriverTripDetails(
+    @Param('id') id: string,
+    @Request() req: { user: any },
+  ) {
+    return this.tripsService.findDriverTripDetails(id, req.user.sub);
+  }
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.tripsService.findOne(id);

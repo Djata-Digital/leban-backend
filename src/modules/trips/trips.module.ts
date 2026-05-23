@@ -11,6 +11,8 @@ import { User } from '../users/entities/user.entity';
 import { VehicleSeat } from '../vehicle-seats/entities/vehicle-seat.entity';
 import { SellerRoute } from '../seller-routes/entities/seller-route.entity';
 import { SeatReservation } from '../seat-reservations/entities/seat-reservation.entity';
+import { Booking } from '../bookings/entities/booking.entity';
+import { CargoRequest } from '../cargo-requests/entities/cargo-request.entity';
 
 @Module({
   imports: [
@@ -21,7 +23,9 @@ import { SeatReservation } from '../seat-reservations/entities/seat-reservation.
       User,
       VehicleSeat,
       SellerRoute,
-      SeatReservation, // necessário para usar SeatReservationRepository no TripsService
+      SeatReservation,
+      Booking,
+      CargoRequest,
     ]),
   ],
   controllers: [TripsController],
