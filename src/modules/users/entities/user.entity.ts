@@ -62,10 +62,6 @@ export class User {
   })
   profilePhotoUrl?: string | null;
 
-  /**
-   * Token do Expo Push Notification.
-   * Utilizado para enviar notificações mesmo com app fechado.
-   */
   @Column({
     name: 'expo_push_token',
     type: 'text',
@@ -87,6 +83,16 @@ export class User {
   })
   status: UserStatus;
 
+  /**
+   * Indica se o telefone já foi confirmado por código WhatsApp.
+   */
+  @Column({
+    name: 'phone_verified',
+    type: 'boolean',
+    default: false,
+  })
+  phoneVerified: boolean;
+
   @Column({
     name: 'password_hash',
     type: 'varchar',
@@ -96,8 +102,8 @@ export class User {
   passwordHash: string;
 
   /**
-   * Campo temporário apenas para receber senha em texto puro
-   * no momento de criação/alteração. Não é persistido no banco.
+   * Campo temporário apenas para receber senha em texto puro.
+   * Não é persistido no banco.
    */
   password?: string;
 
@@ -127,10 +133,7 @@ export class User {
     if (this.password && this.password.trim().length > 0) {
       const saltRounds = 10;
 
-      this.passwordHash = await bcrypt.hash(
-        this.password,
-        saltRounds,
-      );
+      this.passwordHash = await bcrypt.hash(this.password, saltRounds);
 
       this.password = undefined;
     }
@@ -139,12 +142,7 @@ export class User {
   /**
    * Compara senha digitada com hash salvo.
    */
-  async comparePassword(
-    plainPassword: string,
-  ): Promise<boolean> {
-    return bcrypt.compare(
-      plainPassword,
-      this.passwordHash,
-    );
+  async comparePassword(plainPassword: string): Promise<boolean> {
+    return bcrypt.compare(plainPassword, this.passwordHash);
   }
 }

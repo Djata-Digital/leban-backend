@@ -52,6 +52,7 @@ export class UsersService {
       nickname: data.nickname?.trim() || null,
       role: data.role ?? Role.PASSENGER,
       status: UserStatus.ACTIVE,
+      phoneVerified: false,
     });
 
     user.password = data.password;
@@ -61,6 +62,12 @@ export class UsersService {
 
   async save(user: User): Promise<User> {
     return this.usersRepository.save(user);
+  }
+
+  async markPhoneAsVerified(userId: string): Promise<void> {
+    await this.usersRepository.update(userId, {
+      phoneVerified: true,
+    });
   }
 
   async createAdmin(dto: CreateAdminDto): Promise<User> {
@@ -80,6 +87,7 @@ export class UsersService {
       nickname: dto.nickname?.trim() || null,
       role: Role.ADMIN,
       status: dto.status ?? UserStatus.ACTIVE,
+      phoneVerified: true,
     });
 
     admin.password = dto.password;
@@ -97,6 +105,7 @@ export class UsersService {
     if (dto.phoneNumber && dto.phoneNumber.trim() !== admin.phoneNumber) {
       await this.ensurePhoneIsAvailable(dto.phoneNumber.trim(), admin.id);
       admin.phoneNumber = dto.phoneNumber.trim();
+      admin.phoneVerified = true;
     }
 
     if (dto.email !== undefined) {
@@ -236,6 +245,7 @@ export class UsersService {
       if (nextPhoneNumber !== user.phoneNumber) {
         await this.ensurePhoneIsAvailable(nextPhoneNumber, user.id);
         user.phoneNumber = nextPhoneNumber;
+        user.phoneVerified = false;
       }
     }
 

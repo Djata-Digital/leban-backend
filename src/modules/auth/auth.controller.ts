@@ -7,20 +7,47 @@ import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
-/**
- * Controller da autenticação.
- */
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   /**
    * Cadastro público.
+   * Nesta versão, o usuário cria conta, mas o telefone ainda precisa ser verificado.
    */
   @Public()
   @Post('register')
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
+  }
+
+  /**
+   * Confirma o número de telefone usando código enviado por WhatsApp.
+   */
+  @Public()
+  @Post('verify-phone')
+  async verifyPhone(
+    @Body()
+    dto: {
+      phoneNumber: string;
+      code: string;
+    },
+  ) {
+    return this.authService.verifyPhone(dto.phoneNumber, dto.code);
+  }
+
+  /**
+   * Reenvia código de verificação para o WhatsApp.
+   */
+  @Public()
+  @Post('resend-phone-code')
+  async resendPhoneCode(
+    @Body()
+    dto: {
+      phoneNumber: string;
+    },
+  ) {
+    return this.authService.resendPhoneCode(dto.phoneNumber);
   }
 
   /**
@@ -33,10 +60,7 @@ export class AuthController {
   }
 
   /**
-   * Solicita código para redefinir senha.
-   *
-   * Nesta primeira versão, o código será gerado no backend.
-   * Depois podemos integrar SMS/WhatsApp.
+   * Solicita código para redefinir senha via WhatsApp.
    */
   @Public()
   @Post('request-password-reset')
@@ -50,7 +74,7 @@ export class AuthController {
   }
 
   /**
-   * Redefine a senha usando código recebido.
+   * Redefine a senha usando código recebido pelo WhatsApp.
    */
   @Public()
   @Post('reset-password')
